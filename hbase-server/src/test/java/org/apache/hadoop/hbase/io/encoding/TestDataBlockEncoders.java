@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -206,8 +206,8 @@ public class TestDataBlockEncoders {
                           .withIncludesTags(includesTags)
                           .withCompression(Compression.Algorithm.NONE)
                           .build();
-      DataBlockEncoder.EncodedSeeker seeker = encoder.createSeeker(CellComparatorImpl.COMPARATOR,
-          encoder.newDataBlockDecodingContext(meta));
+      DataBlockEncoder.EncodedSeeker seeker =
+        encoder.createSeeker(encoder.newDataBlockDecodingContext(meta));
       seeker.setCurrentBuffer(new SingleByteBuff(encodedBuffer));
       encodedSeekers.add(seeker);
     }
@@ -279,8 +279,8 @@ public class TestDataBlockEncoders {
                           .withIncludesTags(includesTags)
                           .withCompression(Compression.Algorithm.NONE)
                           .build();
-      DataBlockEncoder.EncodedSeeker seeker = encoder.createSeeker(CellComparatorImpl.COMPARATOR,
-          encoder.newDataBlockDecodingContext(meta));
+      DataBlockEncoder.EncodedSeeker seeker =
+        encoder.createSeeker(encoder.newDataBlockDecodingContext(meta));
       seeker.setCurrentBuffer(new SingleByteBuff(encodedBuffer));
       int i = 0;
       do {
@@ -332,7 +332,7 @@ public class TestDataBlockEncoders {
     byte[] family = new byte[0];
     byte[] qualifier = new byte[0];
     byte[] value = new byte[0];
-    KeyValue expectedKV = new KeyValue(row, family, qualifier, -1L, Type.Put, value);
+    KeyValue expectedKV = new KeyValue(row, family, qualifier, 1L, Type.Put, value);
     kvList.add(expectedKV);
     DataBlockEncoding encoding = DataBlockEncoding.ROW_INDEX_V1;
     DataBlockEncoder encoder = encoding.getEncoder();
@@ -341,8 +341,8 @@ public class TestDataBlockEncoders {
     HFileContext meta =
         new HFileContextBuilder().withHBaseCheckSum(false).withIncludesMvcc(includesMemstoreTS)
             .withIncludesTags(includesTags).withCompression(Compression.Algorithm.NONE).build();
-    DataBlockEncoder.EncodedSeeker seeker = encoder.createSeeker(CellComparatorImpl.COMPARATOR,
-      encoder.newDataBlockDecodingContext(meta));
+    DataBlockEncoder.EncodedSeeker seeker =
+      encoder.createSeeker(encoder.newDataBlockDecodingContext(meta));
     seeker.setCurrentBuffer(new SingleByteBuff(encodedBuffer));
     Cell cell = seeker.getCell();
     Assert.assertEquals(expectedKV.getLength(), ((KeyValue) cell).getLength());

@@ -32,17 +32,18 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
+import org.apache.hadoop.hbase.io.ByteBuffAllocator;
 import org.apache.hadoop.hbase.io.hfile.BlockType.BlockCategory;
-import org.apache.hadoop.hbase.io.hfile.Cacheable.MemoryType;
 import org.apache.hadoop.hbase.io.hfile.bucket.BucketCache;
 import org.apache.hadoop.hbase.io.util.MemorySizeUtil;
 import org.apache.hadoop.hbase.nio.ByteBuff;
 import org.apache.hadoop.hbase.testclassification.IOTests;
-import org.apache.hadoop.hbase.testclassification.LargeTests;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Threads;
-import org.junit.After;
 import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Test;
@@ -57,7 +58,7 @@ import org.slf4j.LoggerFactory;
 // (seconds).  It is large because it depends on being able to reset the global
 // blockcache instance which is in a global variable.  Experience has it that
 // tests clash on the global variable if this test is run as small sized test.
-@Category({IOTests.class, LargeTests.class})
+@Category({IOTests.class, MediumTests.class})
 public class TestCacheConfig {
 
   @ClassRule
@@ -77,18 +78,13 @@ public class TestCacheConfig {
     }
 
     @Override
-    public int getDeserialiserIdentifier() {
+    public int getDeserializerIdentifier() {
       return deserializedIdentifier;
     }
 
     @Override
-    public Cacheable deserialize(ByteBuff b, boolean reuse, MemoryType memType) throws IOException {
-      LOG.info("Deserialized " + b + ", reuse=" + reuse);
-      return cacheable;
-    }
-
-    @Override
-    public Cacheable deserialize(ByteBuff b) throws IOException {
+    public Cacheable deserialize(ByteBuff b, ByteBuffAllocator alloc)
+        throws IOException {
       LOG.info("Deserialized " + b);
       return cacheable;
     }
@@ -149,11 +145,6 @@ public class TestCacheConfig {
     public BlockType getBlockType() {
       return BlockType.DATA;
     }
-
-    @Override
-    public MemoryType getMemoryType() {
-      return MemoryType.EXCLUSIVE;
-    }
   }
 
   static class MetaCacheEntry extends DataCacheEntry {
@@ -165,33 +156,25 @@ public class TestCacheConfig {
 
   @Before
   public void setUp() throws Exception {
-    CacheConfig.clearGlobalInstances();
     this.conf = HBaseConfiguration.create();
   }
 
-  @After
-  public void tearDown() throws Exception {
-    // Let go of current block cache.
-    CacheConfig.clearGlobalInstances();
-  }
-
   /**
-   * @param cc
+   * @param bc The block cache instance.
+   * @param cc Cache config.
    * @param doubling If true, addition of element ups counter by 2, not 1, because element added
    * to onheap and offheap caches.
    * @param sizing True if we should run sizing test (doesn't always apply).
    */
-  void basicBlockCacheOps(final CacheConfig cc, final boolean doubling,
+  void basicBlockCacheOps(final BlockCache bc, final CacheConfig cc, final boolean doubling,
       final boolean sizing) {
-    assertTrue(cc.isBlockCacheEnabled());
     assertTrue(CacheConfig.DEFAULT_IN_MEMORY == cc.isInMemory());
-    BlockCache bc = cc.getBlockCache();
     BlockCacheKey bck = new BlockCacheKey("f", 0);
     Cacheable c = new DataCacheEntry();
     // Do asserts on block counting.
     long initialBlockCount = bc.getBlockCount();
     bc.cacheBlock(bck, c, cc.isInMemory());
-    assertEquals(doubling? 2: 1, bc.getBlockCount() - initialBlockCount);
+    assertEquals(doubling ? 2 : 1, bc.getBlockCount() - initialBlockCount);
     bc.evictBlock(bck);
     assertEquals(initialBlockCount, bc.getBlockCount());
     // Do size accounting.  Do it after the above 'warm-up' because it looks like some
@@ -209,7 +192,6 @@ public class TestCacheConfig {
   @Test
   public void testDisableCacheDataBlock() throws IOException {
     Configuration conf = HBaseConfiguration.create();
-    CacheConfig.instantiateBlockCache(conf);
     CacheConfig cacheConfig = new CacheConfig(conf);
     assertTrue(cacheConfig.shouldCacheBlockOnRead(BlockCategory.DATA));
     assertFalse(cacheConfig.shouldCacheCompressed(BlockCategory.DATA));
@@ -257,10 +239,13 @@ public class TestCacheConfig {
     conf.setBoolean(CacheConfig.CACHE_DATA_ON_READ_KEY, true);
     conf.setBoolean(CacheConfig.CACHE_BLOCKS_ON_WRITE_KEY, false);
 
-    HColumnDescriptor family = new HColumnDescriptor("testDisableCacheDataBlock");
-    family.setBlockCacheEnabled(false);
+    ColumnFamilyDescriptor columnFamilyDescriptor =
+      ColumnFamilyDescriptorBuilder
+        .newBuilder(Bytes.toBytes("testDisableCacheDataBlock"))
+        .setBlockCacheEnabled(false)
+        .build();
 
-    cacheConfig = new CacheConfig(conf, family);
+    cacheConfig = new CacheConfig(conf, columnFamilyDescriptor, null, ByteBuffAllocator.HEAP);
     assertFalse(cacheConfig.shouldCacheBlockOnRead(BlockCategory.DATA));
     assertFalse(cacheConfig.shouldCacheCompressed(BlockCategory.DATA));
     assertFalse(cacheConfig.shouldCacheDataCompressed());
@@ -275,12 +260,11 @@ public class TestCacheConfig {
 
   @Test
   public void testCacheConfigDefaultLRUBlockCache() {
-    CacheConfig.instantiateBlockCache(this.conf);
     CacheConfig cc = new CacheConfig(this.conf);
-    assertTrue(cc.isBlockCacheEnabled());
     assertTrue(CacheConfig.DEFAULT_IN_MEMORY == cc.isInMemory());
-    basicBlockCacheOps(cc, false, true);
-    assertTrue(cc.getBlockCache() instanceof LruBlockCache);
+    BlockCache blockCache = BlockCacheFactory.createBlockCache(this.conf);
+    basicBlockCacheOps(blockCache, cc, false, true);
+    assertTrue(blockCache instanceof LruBlockCache);
   }
 
   /**
@@ -309,18 +293,18 @@ public class TestCacheConfig {
   private void doBucketCacheConfigTest() {
     final int bcSize = 100;
     this.conf.setInt(HConstants.BUCKET_CACHE_SIZE_KEY, bcSize);
-    CacheConfig.instantiateBlockCache(this.conf);
     CacheConfig cc = new CacheConfig(this.conf);
-    basicBlockCacheOps(cc, false, false);
-    assertTrue(cc.getBlockCache() instanceof CombinedBlockCache);
+    BlockCache blockCache = BlockCacheFactory.createBlockCache(this.conf);
+    basicBlockCacheOps(blockCache, cc, false, false);
+    assertTrue(blockCache instanceof CombinedBlockCache);
     // TODO: Assert sizes allocated are right and proportions.
-    CombinedBlockCache cbc = (CombinedBlockCache)cc.getBlockCache();
-    BlockCache [] bcs = cbc.getBlockCaches();
+    CombinedBlockCache cbc = (CombinedBlockCache) blockCache;
+    BlockCache[] bcs = cbc.getBlockCaches();
     assertTrue(bcs[0] instanceof LruBlockCache);
-    LruBlockCache lbc = (LruBlockCache)bcs[0];
+    LruBlockCache lbc = (LruBlockCache) bcs[0];
     assertEquals(MemorySizeUtil.getOnHeapCacheSize(this.conf), lbc.getMaxSize());
     assertTrue(bcs[1] instanceof BucketCache);
-    BucketCache bc = (BucketCache)bcs[1];
+    BucketCache bc = (BucketCache) bcs[1];
     // getMaxSize comes back in bytes but we specified size in MB
     assertEquals(bcSize, bc.getMaxSize() / (1024 * 1024));
   }
@@ -341,13 +325,13 @@ public class TestCacheConfig {
     long bcExpectedSize = 100 * 1024 * 1024; // MB.
     assertTrue(lruExpectedSize < bcExpectedSize);
     this.conf.setInt(HConstants.BUCKET_CACHE_SIZE_KEY, bcSize);
-    CacheConfig.instantiateBlockCache(this.conf);
     CacheConfig cc = new CacheConfig(this.conf);
-    basicBlockCacheOps(cc, false, false);
-    assertTrue(cc.getBlockCache() instanceof CombinedBlockCache);
+    BlockCache blockCache = BlockCacheFactory.createBlockCache(this.conf);
+    basicBlockCacheOps(blockCache, cc, false, false);
+    assertTrue(blockCache instanceof CombinedBlockCache);
     // TODO: Assert sizes allocated are right and proportions.
-    CombinedBlockCache cbc = (CombinedBlockCache)cc.getBlockCache();
-    LruBlockCache lbc = cbc.onHeapCache;
+    CombinedBlockCache cbc = (CombinedBlockCache) blockCache;
+    FirstLevelBlockCache lbc = cbc.l1Cache;
     assertEquals(lruExpectedSize, lbc.getMaxSize());
     BlockCache bc = cbc.l2Cache;
     // getMaxSize comes back in bytes but we specified size in MB
@@ -361,7 +345,7 @@ public class TestCacheConfig {
     assertEquals(initialL1BlockCount + 1, lbc.getBlockCount());
     assertEquals(initialL2BlockCount, bc.getBlockCount());
     // Force evictions by putting in a block too big.
-    final long justTooBigSize = lbc.acceptableSize() + 1;
+    final long justTooBigSize = ((LruBlockCache)lbc).acceptableSize() + 1;
     lbc.cacheBlock(new BlockCacheKey("bck2", 0), new DataCacheEntry() {
       @Override
       public long heapSize() {
@@ -382,10 +366,10 @@ public class TestCacheConfig {
   public void testL2CacheWithInvalidBucketSize() {
     Configuration c = new Configuration(this.conf);
     c.set(HConstants.BUCKET_CACHE_IOENGINE_KEY, "offheap");
-    c.set(CacheConfig.BUCKET_CACHE_BUCKETS_KEY, "256,512,1024,2048,4000,4096");
+    c.set(BlockCacheFactory.BUCKET_CACHE_BUCKETS_KEY, "256,512,1024,2048,4000,4096");
     c.setFloat(HConstants.BUCKET_CACHE_SIZE_KEY, 1024);
     try {
-      CacheConfig.getBucketCache(c);
+      BlockCacheFactory.createBlockCache(c);
       fail("Should throw IllegalArgumentException when passing illegal value for bucket size");
     } catch (IllegalArgumentException e) {
     }

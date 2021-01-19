@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.hbase.regionserver.wal;
 
+import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
+
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
@@ -57,7 +59,11 @@ public class AsyncProtobufLogWriter extends AbstractProtobufLogWriter
 
   private final Class<? extends Channel> channelClass;
 
-  private AsyncFSOutput output;
+  private volatile AsyncFSOutput output;
+  /**
+   * Save {@link AsyncFSOutput#getSyncedLength()} when {@link #output} is closed.
+   */
+  private volatile long finalSyncedLength = -1;
 
   private static final class OutputStreamWrapper extends OutputStream
       implements ByteBufferWriter {
@@ -138,8 +144,8 @@ public class AsyncProtobufLogWriter extends AbstractProtobufLogWriter
   }
 
   @Override
-  public CompletableFuture<Long> sync() {
-    return output.flush(false);
+  public CompletableFuture<Long> sync(boolean forceSync) {
+    return output.flush(forceSync);
   }
 
   @Override
@@ -154,6 +160,13 @@ public class AsyncProtobufLogWriter extends AbstractProtobufLogWriter
       LOG.warn("normal close failed, try recover", e);
       output.recoverAndClose(null);
     }
+    /**
+     * We have to call {@link AsyncFSOutput#getSyncedLength()}
+     * after {@link AsyncFSOutput#close()} to get the final length
+     * synced to underlying filesystem because {@link AsyncFSOutput#close()}
+     * may also flush some data to underlying filesystem.
+     */
+    this.finalSyncedLength = this.output.getSyncedLength();
     this.output = null;
   }
 
@@ -194,7 +207,7 @@ public class AsyncProtobufLogWriter extends AbstractProtobufLogWriter
         // should not happen
         throw new AssertionError(e);
       }
-      output.flush(false).whenComplete((len, error) -> {
+      addListener(output.flush(false), (len, error) -> {
         if (error != null) {
           future.completeExceptionally(error);
         } else {
@@ -215,7 +228,7 @@ public class AsyncProtobufLogWriter extends AbstractProtobufLogWriter
       }
       output.writeInt(trailer.getSerializedSize());
       output.write(magic);
-      output.flush(false).whenComplete((len, error) -> {
+      addListener(output.flush(false), (len, error) -> {
         if (error != null) {
           future.completeExceptionally(error);
         } else {
@@ -228,5 +241,21 @@ public class AsyncProtobufLogWriter extends AbstractProtobufLogWriter
   @Override
   protected OutputStream getOutputStreamForCellEncoder() {
     return asyncOutputWrapper;
+  }
+
+  @Override
+  public long getSyncedLength() {
+   /**
+    * The statement "this.output = null;" in {@link AsyncProtobufLogWriter#close}
+    * is a sync point, if output is null, then finalSyncedLength must set,
+    * so we can return finalSyncedLength, else we return output.getSyncedLength
+    */
+    AsyncFSOutput outputToUse = this.output;
+    if(outputToUse == null) {
+        long finalSyncedLengthToUse = this.finalSyncedLength;
+        assert finalSyncedLengthToUse >= 0;
+        return finalSyncedLengthToUse;
+    }
+    return outputToUse.getSyncedLength();
   }
 }

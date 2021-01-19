@@ -16,9 +16,9 @@
  * limitations under the License.
  */
 package org.apache.hadoop.hbase.regionserver;
-
-import static org.junit.Assert.*;
-
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 import java.lang.management.ManagementFactory;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -32,25 +32,23 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.MultithreadedTestUtil;
 import org.apache.hadoop.hbase.MultithreadedTestUtil.TestThread;
 import org.apache.hadoop.hbase.io.util.MemorySizeUtil;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
-import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-
 import org.apache.hbase.thirdparty.com.google.common.collect.Iterables;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.common.collect.Maps;
 import org.apache.hbase.thirdparty.com.google.common.primitives.Ints;
 
-@Category({RegionServerTests.class, SmallTests.class})
+@Category({RegionServerTests.class, MediumTests.class})
 public class TestMemStoreLAB {
 
   @ClassRule
@@ -66,7 +64,7 @@ public class TestMemStoreLAB {
   @BeforeClass
   public static void setUpBeforeClass() throws Exception {
     ChunkCreator.initialize(1 * 1024, false, 50 * 1024000L, 0.2f,
-        MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT, null);
+      MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT, null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
   }
 
   @AfterClass
@@ -75,7 +73,7 @@ public class TestMemStoreLAB {
         (long) (ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getMax()
             * MemorySizeUtil.getGlobalMemStoreHeapPercent(conf, false));
     ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT, false, globalMemStoreLimit, 0.2f,
-      MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT, null);
+      MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT, null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
   }
 
   /**
@@ -94,7 +92,7 @@ public class TestMemStoreLAB {
     for (int i = 0; i < 100000; i++) {
       int valSize = rand.nextInt(3);
       KeyValue kv = new KeyValue(rk, cf, q, new byte[valSize]);
-      int size = KeyValueUtil.length(kv);
+      int size = kv.getSerializedSize();
       ByteBufferKeyValue newKv = (ByteBufferKeyValue) mslab.copyCellInto(kv);
       if (newKv.getBuffer() != lastBuffer) {
         // since we add the chunkID at the 0th offset of the chunk and the
@@ -145,7 +143,7 @@ public class TestMemStoreLAB {
         public void doAnAction() throws Exception {
           int valSize = r.nextInt(3);
           KeyValue kv = new KeyValue(rk, cf, q, new byte[valSize]);
-          int size = KeyValueUtil.length(kv);
+          int size = kv.getSerializedSize();
           ByteBufferKeyValue newCell = (ByteBufferKeyValue) mslab.copyCellInto(kv);
           totalAllocated.addAndGet(size);
           allocsByThisThread.add(new AllocRecord(newCell.getBuffer(), newCell.getOffset(), size));
@@ -167,7 +165,9 @@ public class TestMemStoreLAB {
     int sizeCounted = 0;
     for (AllocRecord rec : Iterables.concat(allocations)) {
       sizeCounted += rec.size;
-      if (rec.size == 0) continue;
+      if (rec.size == 0) {
+        continue;
+      }
       Map<Integer, AllocRecord> mapForThisByteArray =
         mapsByChunk.get(rec.alloc);
       if (mapForThisByteArray == null) {
@@ -217,7 +217,8 @@ public class TestMemStoreLAB {
       long globalMemStoreLimit = (long) (ManagementFactory.getMemoryMXBean().getHeapMemoryUsage()
           .getMax() * MemorySizeUtil.getGlobalMemStoreHeapPercent(conf, false));
       ChunkCreator.initialize(MemStoreLABImpl.MAX_ALLOC_DEFAULT, false,
-        globalMemStoreLimit, 0.1f, MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT, null);
+        globalMemStoreLimit, 0.1f, MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT,
+        null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
       ChunkCreator.clearDisableFlag();
       mslab = new MemStoreLABImpl(conf);
       // launch multiple threads to trigger frequent chunk retirement

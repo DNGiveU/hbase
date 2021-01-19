@@ -18,17 +18,16 @@
  */
 package org.apache.hadoop.hbase.monitoring;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-
-import org.apache.hadoop.util.StringUtils;
-import org.apache.yetus.audience.InterfaceAudience;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.apache.hadoop.hbase.util.GsonUtil;
+import org.apache.yetus.audience.InterfaceAudience;
+
+import org.apache.hbase.thirdparty.com.google.gson.Gson;
 
 @InterfaceAudience.Private
 class MonitoredTaskImpl implements MonitoredTask {
@@ -45,7 +44,7 @@ class MonitoredTaskImpl implements MonitoredTask {
   private boolean journalEnabled = false;
   private List<StatusJournalEntry> journal;
 
-  private static final ObjectMapper MAPPER = new ObjectMapper();
+  private static final Gson GSON = GsonUtil.createGson().create();
 
   public MonitoredTaskImpl() {
     startTime = System.currentTimeMillis();
@@ -213,7 +212,7 @@ class MonitoredTaskImpl implements MonitoredTask {
 
   @Override
   public String toJSON() throws IOException {
-    return MAPPER.writeValueAsString(toMap());
+    return GSON.toJson(toMap());
   }
 
   @Override
@@ -259,7 +258,7 @@ class MonitoredTaskImpl implements MonitoredTask {
     if (journal == null) {
       journal = new ArrayList<StatusJournalEntry>();
     }
-    if (includeCurrentStatus) {
+    if (includeCurrentStatus && status != null) {
       journal.add(new StatusJournalEntryImpl(status, statusTime));
     }
   }
@@ -271,7 +270,23 @@ class MonitoredTaskImpl implements MonitoredTask {
 
   @Override
   public String prettyPrintJournal() {
-    return StringUtils.join("\n\t", getStatusJournal());
+    if (!journalEnabled) {
+      return "";
+    }
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < journal.size(); i++) {
+      StatusJournalEntry je = journal.get(i);
+      sb.append(je.toString());
+      if (i != 0) {
+        StatusJournalEntry jep = journal.get(i-1);
+        long delta = je.getTimeStamp() - jep.getTimeStamp();
+        if (delta != 0) {
+          sb.append(" (+" + delta + " ms)");
+        }
+      }
+      sb.append("\n");
+    }
+    return sb.toString();
   }
 
 }

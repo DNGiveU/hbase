@@ -17,6 +17,9 @@
  */
 package org.apache.hadoop.hbase.client;
 
+import static org.apache.hadoop.hbase.client.ConnectionUtils.validatePut;
+import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -25,12 +28,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.yetus.audience.InterfaceAudience;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.io.netty.util.HashedWheelTimer;
 import org.apache.hbase.thirdparty.io.netty.util.Timeout;
 
@@ -48,6 +49,8 @@ class AsyncBufferedMutatorImpl implements AsyncBufferedMutator {
 
   private final long periodicFlushTimeoutNs;
 
+  private final int maxKeyValueSize;
+
   private List<Mutation> mutations = new ArrayList<>();
 
   private List<CompletableFuture<Void>> futures = new ArrayList<>();
@@ -56,15 +59,15 @@ class AsyncBufferedMutatorImpl implements AsyncBufferedMutator {
 
   private boolean closed;
 
-  @VisibleForTesting
   Timeout periodicFlushTask;
 
   AsyncBufferedMutatorImpl(HashedWheelTimer periodicalFlushTimer, AsyncTable<?> table,
-      long writeBufferSize, long periodicFlushTimeoutNs) {
+      long writeBufferSize, long periodicFlushTimeoutNs, int maxKeyValueSize) {
     this.periodicalFlushTimer = periodicalFlushTimer;
     this.table = table;
     this.writeBufferSize = writeBufferSize;
     this.periodicFlushTimeoutNs = periodicFlushTimeoutNs;
+    this.maxKeyValueSize = maxKeyValueSize;
   }
 
   @Override
@@ -78,7 +81,6 @@ class AsyncBufferedMutatorImpl implements AsyncBufferedMutator {
   }
 
   // will be overridden in test
-  @VisibleForTesting
   protected void internalFlush() {
     if (periodicFlushTask != null) {
       periodicFlushTask.cancel();
@@ -96,7 +98,7 @@ class AsyncBufferedMutatorImpl implements AsyncBufferedMutator {
     Iterator<CompletableFuture<Void>> toCompleteIter = toComplete.iterator();
     for (CompletableFuture<?> future : table.batch(toSend)) {
       CompletableFuture<Void> toCompleteFuture = toCompleteIter.next();
-      future.whenComplete((r, e) -> {
+      addListener(future, (r, e) -> {
         if (e != null) {
           toCompleteFuture.completeExceptionally(e);
         } else {
@@ -111,7 +113,13 @@ class AsyncBufferedMutatorImpl implements AsyncBufferedMutator {
     List<CompletableFuture<Void>> futures =
       Stream.<CompletableFuture<Void>> generate(CompletableFuture::new).limit(mutations.size())
         .collect(Collectors.toList());
-    long heapSize = mutations.stream().mapToLong(m -> m.heapSize()).sum();
+    long heapSize = 0;
+    for (Mutation mutation : mutations) {
+      heapSize += mutation.heapSize();
+      if (mutation instanceof Put) {
+        validatePut((Put)mutation, maxKeyValueSize);
+      }
+    }
     synchronized (this) {
       if (closed) {
         IOException ioe = new IOException("Already closed");

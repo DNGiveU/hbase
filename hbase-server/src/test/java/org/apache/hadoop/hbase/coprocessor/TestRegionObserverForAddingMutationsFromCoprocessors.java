@@ -29,9 +29,8 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
@@ -40,6 +39,8 @@ import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.regionserver.MiniBatchOperationInProgress;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -98,16 +99,14 @@ public class TestRegionObserverForAddingMutationsFromCoprocessors {
   }
 
   private void createTable(String coprocessor) throws IOException {
-    HTableDescriptor htd = new HTableDescriptor(tableName)
-        .addFamily(new HColumnDescriptor(dummy))
-        .addFamily(new HColumnDescriptor(test))
-        .addCoprocessor(coprocessor);
-    util.getAdmin().createTable(htd);
+    TableDescriptor tableDescriptor = TableDescriptorBuilder.newBuilder(tableName)
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(dummy))
+      .setColumnFamily(ColumnFamilyDescriptorBuilder.of(test)).setCoprocessor(coprocessor).build();
+    util.getAdmin().createTable(tableDescriptor);
   }
 
   /**
    * Test various multiput operations.
-   * @throws Exception
    */
   @Test
   public void testMulti() throws Exception {
@@ -197,6 +196,39 @@ public class TestRegionObserverForAddingMutationsFromCoprocessors {
 
       t.delete(new Delete(test).addColumn(test, dummy)); // delete non-existing row
       assertRowCount(t, 1);
+    }
+  }
+
+  @Test
+  public void testPutWithTTL() throws Exception {
+    createTable(TestPutWithTTLCoprocessor.class.getName());
+
+    try (Table t = util.getConnection().getTable(tableName)) {
+      t.put(new Put(row1).addColumn(test, dummy, dummy).setTTL(3000));
+      assertRowCount(t, 2);
+      // wait long enough for the TTL to expire
+      Thread.sleep(5000);
+      assertRowCount(t, 0);
+    }
+  }
+
+  public static class TestPutWithTTLCoprocessor implements RegionCoprocessor, RegionObserver {
+    @Override
+    public Optional<RegionObserver> getRegionObserver() {
+      return Optional.of(this);
+    }
+
+    @Override
+    public void preBatchMutate(ObserverContext<RegionCoprocessorEnvironment> c,
+        MiniBatchOperationInProgress<Mutation> miniBatchOp) throws IOException {
+      Mutation mut = miniBatchOp.getOperation(0);
+      List<Cell> cells = mut.getFamilyCellMap().get(test);
+      Put[] puts = new Put[] {
+          new Put(Bytes.toBytes("cpPut")).addColumn(test, dummy, cells.get(0).getTimestamp(),
+            Bytes.toBytes("cpdummy")).setTTL(mut.getTTL())
+          };
+      LOG.info("Putting:" + Arrays.toString(puts));
+      miniBatchOp.addOperationsFromCP(0, puts);
     }
   }
 

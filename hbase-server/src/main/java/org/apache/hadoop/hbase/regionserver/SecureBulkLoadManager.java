@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -26,9 +26,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.BiFunction;
 import java.util.function.Consumer;
-
+import org.apache.commons.lang3.mutable.MutableInt;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -38,15 +37,16 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.AsyncConnection;
 import org.apache.hadoop.hbase.ipc.RpcServer;
 import org.apache.hadoop.hbase.regionserver.HRegion.BulkLoadListener;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.UserProvider;
+import org.apache.hadoop.hbase.security.token.AuthenticationTokenIdentifier;
+import org.apache.hadoop.hbase.security.token.ClientTokenUtil;
 import org.apache.hadoop.hbase.security.token.FsDelegationToken;
-import org.apache.hadoop.hbase.security.token.TokenUtil;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSHDFSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.util.Methods;
 import org.apache.hadoop.hbase.util.Pair;
@@ -56,7 +56,7 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
+
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos.BulkLoadHFileRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClientProtos.CleanupBulkLoadRequest;
@@ -110,10 +110,10 @@ public class SecureBulkLoadManager {
   private Path baseStagingDir;
 
   private UserProvider userProvider;
-  private ConcurrentHashMap<UserGroupInformation, Integer> ugiReferenceCounter;
-  private Connection conn;
+  private ConcurrentHashMap<UserGroupInformation, MutableInt> ugiReferenceCounter;
+  private AsyncConnection conn;
 
-  SecureBulkLoadManager(Configuration conf, Connection conn) {
+  SecureBulkLoadManager(Configuration conf, AsyncConnection conn) {
     this.conf = conf;
     this.conn = conn;
   }
@@ -123,7 +123,7 @@ public class SecureBulkLoadManager {
     userProvider = UserProvider.instantiate(conf);
     ugiReferenceCounter = new ConcurrentHashMap<>();
     fs = FileSystem.get(conf);
-    baseStagingDir = new Path(FSUtils.getRootDir(conf), HConstants.BULKLOAD_STAGING_DIR_NAME);
+    baseStagingDir = new Path(CommonFSUtils.getRootDir(conf), HConstants.BULKLOAD_STAGING_DIR_NAME);
 
     if (conf.get("hbase.bulkload.staging.dir") != null) {
       LOG.warn("hbase.bulkload.staging.dir " + " is deprecated. Bulkload staging directory is "
@@ -151,84 +151,82 @@ public class SecureBulkLoadManager {
 
   public void cleanupBulkLoad(final HRegion region, final CleanupBulkLoadRequest request)
       throws IOException {
-    try {
-      region.getCoprocessorHost().preCleanupBulkLoad(getActiveUser());
+    region.getCoprocessorHost().preCleanupBulkLoad(getActiveUser());
 
-      Path path = new Path(request.getBulkToken());
-      if (!fs.delete(path, true)) {
-        if (fs.exists(path)) {
-          throw new IOException("Failed to clean up " + path);
-        }
-      }
-      LOG.info("Cleaned up " + path + " successfully.");
-    } finally {
-      UserGroupInformation ugi = getActiveUser().getUGI();
-      try {
-        if (!UserGroupInformation.getLoginUser().equals(ugi) && !isUserReferenced(ugi)) {
-          FileSystem.closeAllForUGI(ugi);
-        }
-      } catch (IOException e) {
-        LOG.error("Failed to close FileSystem for: " + ugi, e);
+    Path path = new Path(request.getBulkToken());
+    if (!fs.delete(path, true)) {
+      if (fs.exists(path)) {
+        throw new IOException("Failed to clean up " + path);
       }
     }
+    LOG.trace("Cleaned up {} successfully.", path);
   }
 
   private Consumer<HRegion> fsCreatedListener;
 
-  @VisibleForTesting
   void setFsCreatedListener(Consumer<HRegion> fsCreatedListener) {
     this.fsCreatedListener = fsCreatedListener;
   }
 
-
   private void incrementUgiReference(UserGroupInformation ugi) {
-    ugiReferenceCounter.merge(ugi, 1, new BiFunction<Integer, Integer, Integer>() {
-      @Override
-      public Integer apply(Integer oldvalue, Integer value) {
-        return ++oldvalue;
+    // if we haven't seen this ugi before, make a new counter
+    ugiReferenceCounter.compute(ugi, (key, value) -> {
+      if (value == null) {
+        value = new MutableInt(1);
+      } else {
+        value.increment();
       }
+      return value;
     });
   }
 
   private void decrementUgiReference(UserGroupInformation ugi) {
-    ugiReferenceCounter.computeIfPresent(ugi,
-        new BiFunction<UserGroupInformation, Integer, Integer>() {
-          @Override
-          public Integer apply(UserGroupInformation key, Integer value) {
-            return value > 1 ? --value : null;
-          }
-      });
+    // if the count drops below 1 we remove the entry by returning null
+    ugiReferenceCounter.computeIfPresent(ugi, (key, value) -> {
+      if (value.intValue() > 1) {
+        value.decrement();
+      } else {
+        value = null;
+      }
+      return value;
+    });
   }
 
   private boolean isUserReferenced(UserGroupInformation ugi) {
-    Integer count = ugiReferenceCounter.get(ugi);
-    return count != null && count > 0;
+    // if the ugi is in the map, based on invariants above
+    // the count must be above zero
+    return ugiReferenceCounter.containsKey(ugi);
   }
 
   public Map<byte[], List<Path>> secureBulkLoadHFiles(final HRegion region,
-      final BulkLoadHFileRequest request) throws IOException {
+    final BulkLoadHFileRequest request) throws IOException {
+    return secureBulkLoadHFiles(region, request, null);
+  }
+
+  public Map<byte[], List<Path>> secureBulkLoadHFiles(final HRegion region,
+      final BulkLoadHFileRequest request, List<String> clusterIds) throws IOException {
     final List<Pair<byte[], String>> familyPaths = new ArrayList<>(request.getFamilyPathCount());
     for(ClientProtos.BulkLoadHFileRequest.FamilyPath el : request.getFamilyPathList()) {
       familyPaths.add(new Pair<>(el.getFamily().toByteArray(), el.getPath()));
     }
 
-    Token userToken = null;
+    Token<AuthenticationTokenIdentifier> userToken = null;
     if (userProvider.isHadoopSecurityEnabled()) {
-      userToken = new Token(request.getFsToken().getIdentifier().toByteArray(), request.getFsToken()
-              .getPassword().toByteArray(), new Text(request.getFsToken().getKind()), new Text(
-              request.getFsToken().getService()));
+      userToken = new Token<>(request.getFsToken().getIdentifier().toByteArray(),
+        request.getFsToken().getPassword().toByteArray(), new Text(request.getFsToken().getKind()),
+        new Text(request.getFsToken().getService()));
     }
     final String bulkToken = request.getBulkToken();
     User user = getActiveUser();
     final UserGroupInformation ugi = user.getUGI();
     if (userProvider.isHadoopSecurityEnabled()) {
       try {
-        Token tok = TokenUtil.obtainToken(conn);
+        Token<AuthenticationTokenIdentifier> tok = ClientTokenUtil.obtainToken(conn).get();
         if (tok != null) {
           boolean b = ugi.addToken(tok);
           LOG.debug("token added " + tok + " for user " + ugi + " return=" + b);
         }
-      } catch (IOException ioe) {
+      } catch (Exception ioe) {
         LOG.warn("unable to add token", ioe);
       }
     }
@@ -268,6 +266,13 @@ public class SecureBulkLoadManager {
         public Map<byte[], List<Path>> run() {
           FileSystem fs = null;
           try {
+            /*
+             * This is creating and caching a new FileSystem instance. Other code called
+             * "beneath" this method will rely on this FileSystem instance being in the
+             * cache. This is important as those methods make _no_ attempt to close this
+             * FileSystem instance. It is critical that here, in SecureBulkLoadManager,
+             * we are tracking the lifecycle and closing the FS when safe to do so.
+             */
             fs = FileSystem.get(conf);
             for(Pair<byte[], String> el: familyPaths) {
               Path stageFamily = new Path(bulkToken, Bytes.toString(el.getFirst()));
@@ -282,7 +287,8 @@ public class SecureBulkLoadManager {
             //We call bulkLoadHFiles as requesting user
             //To enable access prior to staging
             return region.bulkLoadHFiles(familyPaths, true,
-                new SecureBulkLoadListener(fs, bulkToken, conf), request.getCopyFile());
+                new SecureBulkLoadListener(fs, bulkToken, conf), request.getCopyFile(),
+              clusterIds, request.getReplicate());
           } catch (Exception e) {
             LOG.error("Failed to complete bulk load", e);
           }
@@ -291,6 +297,13 @@ public class SecureBulkLoadManager {
       });
     } finally {
       decrementUgiReference(ugi);
+      try {
+        if (!UserGroupInformation.getLoginUser().equals(ugi) && !isUserReferenced(ugi)) {
+          FileSystem.closeAllForUGI(ugi);
+        }
+      } catch (IOException e) {
+        LOG.error("Failed to close FileSystem for: {}", ugi, e);
+      }
       if (region.getCoprocessorHost() != null) {
         region.getCoprocessorHost().postBulkLoadHFile(familyPaths, map);
       }
@@ -366,7 +379,7 @@ public class SecureBulkLoadManager {
       }
 
       // Check to see if the source and target filesystems are the same
-      if (!FSHDFSUtils.isSameHdfs(conf, srcFs, fs)) {
+      if (!FSUtils.isSameHdfs(conf, srcFs, fs)) {
         LOG.debug("Bulk-load file " + srcPath + " is on different filesystem than " +
             "the destination filesystem. Copying file over to destination staging dir.");
         FileUtil.copy(srcFs, p, fs, stageP, false, conf);
@@ -405,7 +418,7 @@ public class SecureBulkLoadManager {
         if (srcFs == null) {
           srcFs = FileSystem.newInstance(p.toUri(), conf);
         }
-        if (!FSHDFSUtils.isSameHdfs(conf, srcFs, fs)) {
+        if (!FSUtils.isSameHdfs(conf, srcFs, fs)) {
           // files are copied so no need to move them back
           return;
         }

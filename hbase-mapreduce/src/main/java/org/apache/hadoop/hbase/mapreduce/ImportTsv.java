@@ -26,27 +26,25 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashSet;
 import java.util.Set;
-
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseConfiguration;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.TableNotEnabledException;
 import org.apache.hadoop.hbase.TableNotFoundException;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.RegionLocator;
 import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
@@ -59,9 +57,10 @@ import org.apache.hadoop.mapreduce.lib.output.NullOutputFormat;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
+import org.apache.yetus.audience.InterfaceAudience;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
-import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.base.Splitter;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
@@ -194,11 +193,11 @@ public class ImportTsv extends Configured implements Tool {
         }
         String[] parts = str.split(":", 2);
         if (parts.length == 1) {
-          families[i] = str.getBytes();
+          families[i] = Bytes.toBytes(str);
           qualifiers[i] = HConstants.EMPTY_BYTE_ARRAY;
         } else {
-          families[i] = parts[0].getBytes();
-          qualifiers[i] = parts[1].getBytes();
+          families[i] = Bytes.toBytes(parts[0]);
+          qualifiers[i] = Bytes.toBytes(parts[1]);
         }
       }
     }
@@ -471,7 +470,7 @@ public class ImportTsv extends Configured implements Tool {
         String actualSeparator = conf.get(SEPARATOR_CONF_KEY);
         if (actualSeparator != null) {
           conf.set(SEPARATOR_CONF_KEY,
-              Bytes.toString(Base64.getEncoder().encode(actualSeparator.getBytes())));
+              Bytes.toString(Base64.getEncoder().encode(Bytes.toBytes(actualSeparator))));
         }
 
         // See if a non-default Mapper was set
@@ -596,15 +595,15 @@ public class ImportTsv extends Configured implements Tool {
 
   private static void createTable(Admin admin, TableName tableName, String[] columns)
       throws IOException {
-    HTableDescriptor htd = new HTableDescriptor(tableName);
+    TableDescriptorBuilder builder =
+      TableDescriptorBuilder.newBuilder(tableName);
     Set<String> cfSet = getColumnFamilies(columns);
     for (String cf : cfSet) {
-      HColumnDescriptor hcd = new HColumnDescriptor(Bytes.toBytes(cf));
-      htd.addFamily(hcd);
+      builder.setColumnFamily(ColumnFamilyDescriptorBuilder.of(cf));
     }
     LOG.warn(format("Creating table '%s' with '%s' columns and default descriptors.",
       tableName, cfSet));
-    admin.createTable(htd);
+    admin.createTable(builder.build());
   }
 
   private static void deleteTable(Configuration conf, String[] args) {

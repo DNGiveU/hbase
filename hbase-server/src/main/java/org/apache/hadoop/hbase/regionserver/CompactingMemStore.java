@@ -18,9 +18,6 @@
  */
 package org.apache.hadoop.hbase.regionserver;
 
-import org.apache.hadoop.hbase.exceptions.IllegalArgumentIOException;
-import org.apache.hadoop.util.StringUtils;
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -32,13 +29,15 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.MemoryCompactionPolicy;
-import org.apache.yetus.audience.InterfaceAudience;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hbase.exceptions.IllegalArgumentIOException;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ClassSize;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.wal.WAL;
+import org.apache.hadoop.util.StringUtils;
+import org.apache.yetus.audience.InterfaceAudience;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A memstore implementation which supports in-memory compaction.
@@ -63,6 +62,10 @@ public class CompactingMemStore extends AbstractMemStore {
   public static final String IN_MEMORY_FLUSH_THRESHOLD_FACTOR_KEY =
       "hbase.memstore.inmemoryflush.threshold.factor";
   private static final int IN_MEMORY_FLUSH_MULTIPLIER = 1;
+  // In-Memory compaction pool size
+  public static final String IN_MEMORY_CONPACTION_POOL_SIZE_KEY =
+      "hbase.regionserver.inmemory.compaction.pool.size";
+  public static final int IN_MEMORY_CONPACTION_POOL_SIZE_DEFAULT = 10;
 
   private static final Logger LOG = LoggerFactory.getLogger(CompactingMemStore.class);
   private HStore store;
@@ -75,7 +78,6 @@ public class CompactingMemStore extends AbstractMemStore {
   // inWalReplay is true while we are synchronously replaying the edits from WAL
   private boolean inWalReplay = false;
 
-  @VisibleForTesting
   protected final AtomicBoolean allowCompaction = new AtomicBoolean(true);
   private boolean compositeSnapshot = true;
 
@@ -124,7 +126,6 @@ public class CompactingMemStore extends AbstractMemStore {
         (this.compactor == null? "NULL": this.compactor.toString()));
   }
 
-  @VisibleForTesting
   protected MemStoreCompactor createMemStoreCompactor(MemoryCompactionPolicy compactionPolicy)
       throws IllegalArgumentIOException {
     return new MemStoreCompactor(this, compactionPolicy);
@@ -208,6 +209,7 @@ public class CompactingMemStore extends AbstractMemStore {
       // region level lock ensures pushing active to pipeline is done in isolation
       // no concurrent update operations trying to flush the active segment
       pushActiveToPipeline(getActive());
+      resetTimeOfOldestEdit();
       snapshotId = EnvironmentEdgeManager.currentTime();
       // in both cases whatever is pushed to snapshot is cleared from the pipeline
       if (compositeSnapshot) {
@@ -308,9 +310,10 @@ public class CompactingMemStore extends AbstractMemStore {
    * @param memstoreSizing object to accumulate region size changes
    * @return true iff can proceed with applying the update
    */
-  @Override protected boolean preUpdate(MutableSegment currentActive, Cell cell,
+  @Override
+  protected boolean preUpdate(MutableSegment currentActive, Cell cell,
       MemStoreSizing memstoreSizing) {
-    if(currentActive.sharedLock()) {
+    if (currentActive.sharedLock()) {
       if (checkAndAddToActiveSize(currentActive, cell, memstoreSizing)) {
         return true;
       }
@@ -328,7 +331,6 @@ public class CompactingMemStore extends AbstractMemStore {
   }
 
   // the getSegments() method is used for tests only
-  @VisibleForTesting
   @Override
   protected List<Segment> getSegments() {
     List<? extends Segment> pipelineList = pipeline.getSegments();
@@ -361,7 +363,6 @@ public class CompactingMemStore extends AbstractMemStore {
   }
 
   // setter is used only for testability
-  @VisibleForTesting
   void setIndexType(IndexType type) {
     indexType = type;
     // Because this functionality is for testing only and tests are setting in-memory flush size
@@ -407,7 +408,6 @@ public class CompactingMemStore extends AbstractMemStore {
     return list;
   }
 
-  @VisibleForTesting
   protected List<KeyValueScanner> createList(int capacity) {
     return new ArrayList<>(capacity);
   }
@@ -445,7 +445,6 @@ public class CompactingMemStore extends AbstractMemStore {
   // externally visible only for tests
   // when invoked directly from tests it must be verified that the caller doesn't hold updatesLock,
   // otherwise there is a deadlock
-  @VisibleForTesting
   void flushInMemory() {
     MutableSegment currActive = getActive();
     if(currActive.setInMemoryFlushed()) {
@@ -493,19 +492,18 @@ public class CompactingMemStore extends AbstractMemStore {
     return getRegionServices().getInMemoryCompactionPool();
   }
 
-  @VisibleForTesting
   protected boolean shouldFlushInMemory(MutableSegment currActive, Cell cellToAdd,
       MemStoreSizing memstoreSizing) {
-    long cellSize = currActive.getCellLength(cellToAdd);
+    long cellSize = MutableSegment.getCellLength(cellToAdd);
     long segmentDataSize = currActive.getDataSize();
     while (segmentDataSize + cellSize < inmemoryFlushSize || inWalReplay) {
       // when replaying edits from WAL there is no need in in-memory flush regardless the size
       // otherwise size below flush threshold try to update atomically
-      if(currActive.compareAndSetDataSize(segmentDataSize, segmentDataSize + cellSize)) {
-        if(memstoreSizing != null){
-          memstoreSizing.incMemStoreSize(cellSize, 0, 0);
+      if (currActive.compareAndSetDataSize(segmentDataSize, segmentDataSize + cellSize)) {
+        if (memstoreSizing != null) {
+          memstoreSizing.incMemStoreSize(cellSize, 0, 0, 0);
         }
-        //enough space for cell - no need to flush
+        // enough space for cell - no need to flush
         return false;
       }
       segmentDataSize = currActive.getDataSize();
@@ -590,7 +588,6 @@ public class CompactingMemStore extends AbstractMemStore {
     }
   }
 
-  @VisibleForTesting
   boolean isMemStoreFlushingInMemory() {
     return inMemoryCompactionInProgress.get();
   }
@@ -613,7 +610,6 @@ public class CompactingMemStore extends AbstractMemStore {
     return lowest;
   }
 
-  @VisibleForTesting
   long getInmemoryFlushSize() {
     return inmemoryFlushSize;
   }

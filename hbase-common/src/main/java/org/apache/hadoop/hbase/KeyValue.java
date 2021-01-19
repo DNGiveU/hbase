@@ -32,6 +32,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+
 import org.apache.hadoop.hbase.util.ByteBufferUtils;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ClassSize;
@@ -39,8 +40,6 @@ import org.apache.hadoop.io.RawComparator;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * An HBase Key/Value. This is the fundamental HBase Type.
@@ -104,7 +103,8 @@ public class KeyValue implements ExtendedCell, Cloneable {
   /**
    * A {@link KVComparator} for <code>hbase:meta</code> catalog table
    * {@link KeyValue}s.
-   * @deprecated Use {@link CellComparatorImpl#META_COMPARATOR} instead. Deprecated for hbase 2.0, remove for hbase 3.0.
+   * @deprecated Use {@link MetaCellComparator#META_COMPARATOR} instead.
+   *   Deprecated for hbase 2.0, remove for hbase 3.0.
    */
   @Deprecated
   public static final KVComparator META_COMPARATOR = new MetaComparator();
@@ -252,6 +252,15 @@ public class KeyValue implements ExtendedCell, Cloneable {
     }
 
     /**
+     * True to indicate that the byte b is a valid type.
+     * @param b byte to check
+     * @return true or false
+     */
+    static boolean isValidType(byte b) {
+      return codeArray[b & 0xff] != null;
+    }
+
+    /**
      * Cannot rely on enum ordinals . They change if item is removed or moved.
      * Do our own codes.
      * @param b
@@ -331,7 +340,8 @@ public class KeyValue implements ExtendedCell, Cloneable {
    * @param offset offset to start of the KeyValue
    * @param length length of the KeyValue
    */
-  public KeyValue(final byte [] bytes, final int offset, final int length) {
+  public KeyValue(final byte[] bytes, final int offset, final int length) {
+    KeyValueUtil.checkKeyValueBytes(bytes, offset, length, true);
     this.bytes = bytes;
     this.offset = offset;
     this.length = length;
@@ -1221,7 +1231,6 @@ public class KeyValue implements ExtendedCell, Cloneable {
    * and that we need access to the backing array to do some test case related assertions.
    * @return The byte array backing this KeyValue.
    */
-  @VisibleForTesting
   public byte [] getBuffer() {
     return this.bytes;
   }
@@ -1340,14 +1349,14 @@ public class KeyValue implements ExtendedCell, Cloneable {
    */
   @Override
   public int getFamilyOffset() {
-    return getFamilyOffset(getRowLength());
+    return getFamilyOffset(getFamilyLengthPosition(getRowLength()));
   }
 
   /**
    * @return Family offset
    */
-  private int getFamilyOffset(int rlength) {
-    return this.offset + ROW_KEY_OFFSET + rlength + Bytes.SIZEOF_BYTE;
+  int getFamilyOffset(int familyLenPosition) {
+    return familyLenPosition + Bytes.SIZEOF_BYTE;
   }
 
   /**
@@ -1355,14 +1364,18 @@ public class KeyValue implements ExtendedCell, Cloneable {
    */
   @Override
   public byte getFamilyLength() {
-    return getFamilyLength(getFamilyOffset());
+    return getFamilyLength(getFamilyLengthPosition(getRowLength()));
   }
 
   /**
    * @return Family length
    */
-  public byte getFamilyLength(int foffset) {
-    return this.bytes[foffset-1];
+  public byte getFamilyLength(int famLenPos) {
+    return this.bytes[famLenPos];
+  }
+
+  int getFamilyLengthPosition(int rowLength) {
+    return this.offset + KeyValue.ROW_KEY_OFFSET + rowLength;
   }
 
   /**
@@ -1385,7 +1398,14 @@ public class KeyValue implements ExtendedCell, Cloneable {
    * @return Qualifier offset
    */
   private int getQualifierOffset(int foffset) {
-    return foffset + getFamilyLength(foffset);
+    return getQualifierOffset(foffset, getFamilyLength());
+  }
+
+  /**
+   * @return Qualifier offset
+   */
+  int getQualifierOffset(int foffset, int flength) {
+    return foffset + flength;
   }
 
   /**
@@ -1400,7 +1420,14 @@ public class KeyValue implements ExtendedCell, Cloneable {
    * @return Qualifier length
    */
   private int getQualifierLength(int rlength, int flength) {
-    return getKeyLength() - (int) getKeyDataStructureSize(rlength, flength, 0);
+    return getQualifierLength(getKeyLength(), rlength, flength);
+  }
+
+  /**
+   * @return Qualifier length
+   */
+  int getQualifierLength(int keyLength, int rlength, int flength) {
+    return keyLength - (int) getKeyDataStructureSize(rlength, flength, 0);
   }
 
   /**
@@ -1493,7 +1520,11 @@ public class KeyValue implements ExtendedCell, Cloneable {
    */
   @Override
   public byte getTypeByte() {
-    return this.bytes[this.offset + getKeyLength() - 1 + ROW_OFFSET];
+    return getTypeByte(getKeyLength());
+  }
+
+  byte getTypeByte(int keyLength) {
+    return this.bytes[this.offset + keyLength - 1 + ROW_OFFSET];
   }
 
   /**
@@ -1596,7 +1627,8 @@ public class KeyValue implements ExtendedCell, Cloneable {
   /**
    * A {@link KVComparator} for <code>hbase:meta</code> catalog table
    * {@link KeyValue}s.
-   * @deprecated : {@link CellComparatorImpl#META_COMPARATOR} to be used. Deprecated for hbase 2.0, remove for hbase 3.0.
+   * @deprecated : {@link MetaCellComparator#META_COMPARATOR} to be used.
+   *   Deprecated for hbase 2.0, remove for hbase 3.0.
    */
   @Deprecated
   public static class MetaComparator extends KVComparator {
@@ -1606,7 +1638,8 @@ public class KeyValue implements ExtendedCell, Cloneable {
      */
     @Override
     public int compare(final Cell left, final Cell right) {
-      return PrivateCellUtil.compareKeyIgnoresMvcc(CellComparatorImpl.META_COMPARATOR, left, right);
+      return PrivateCellUtil.compareKeyIgnoresMvcc(MetaCellComparator.META_COMPARATOR, left,
+        right);
     }
 
     @Override
@@ -1865,8 +1898,8 @@ public class KeyValue implements ExtendedCell, Cloneable {
      * @param rlength
      * @return 0 if equal, &lt;0 if left smaller, &gt;0 if right smaller
      */
-    public int compareRows(byte [] left, int loffset, int llength,
-        byte [] right, int roffset, int rlength) {
+    public int compareRows(byte[] left, int loffset, int llength, byte[] right, int roffset,
+        int rlength) {
       return Bytes.compareTo(left, loffset, llength, right, roffset, rlength);
     }
 
@@ -2313,6 +2346,11 @@ public class KeyValue implements ExtendedCell, Cloneable {
   }
 
   @Override
+  public int getSerializedSize() {
+    return this.length;
+  }
+
+  @Override
   public void write(ByteBuffer buf, int offset) {
     ByteBufferUtils.copyFromArrayToBuffer(buf, offset, this.bytes, this.offset, this.length);
   }
@@ -2434,6 +2472,10 @@ public class KeyValue implements ExtendedCell, Cloneable {
       return this.bytes[getFamilyOffset() - 1];
     }
 
+    int getFamilyLengthPosition(int rowLength) {
+      return this.offset + Bytes.SIZEOF_SHORT + rowLength;
+    }
+
     @Override
     public int getFamilyOffset() {
       return this.offset + Bytes.SIZEOF_SHORT + getRowLength() + Bytes.SIZEOF_BYTE;
@@ -2466,8 +2508,13 @@ public class KeyValue implements ExtendedCell, Cloneable {
 
     @Override
     public byte getTypeByte() {
-      return this.bytes[this.offset + getKeyLength() - 1];
+      return getTypeByte(getKeyLength());
     }
+
+    byte getTypeByte(int keyLength) {
+      return this.bytes[this.offset + keyLength - 1];
+    }
+
 
     private int getQualifierLength(int rlength, int flength) {
       return getKeyLength() - (int) getKeyDataStructureSize(rlength, flength, 0);

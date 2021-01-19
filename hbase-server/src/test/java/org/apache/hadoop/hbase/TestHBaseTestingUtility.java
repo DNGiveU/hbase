@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -24,7 +24,6 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
-
 import java.io.File;
 import java.util.List;
 import java.util.Random;
@@ -42,6 +41,7 @@ import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.zookeeper.MiniZooKeeperCluster;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.security.ssl.SSLFactory;
 import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
@@ -75,7 +75,7 @@ public class TestHBaseTestingUtility {
    * Basic sanity test that spins up multiple HDFS and HBase clusters that share
    * the same ZK ensemble. We then create the same table in both and make sure
    * that what we insert in one place doesn't end up in the other.
-   * @throws Exception
+   * @throws Exception on error
    */
   @Test
   public void testMultiClusters() throws Exception {
@@ -177,8 +177,8 @@ public class TestHBaseTestingUtility {
     KeyStoreTestUtil.setupSSLConfig(keystoresDir, sslConfDir, hbt.getConfiguration(), false);
 
     hbt.getConfiguration().set("hbase.ssl.enabled", "true");
-    hbt.getConfiguration().addResource("ssl-server.xml");
-    hbt.getConfiguration().addResource("ssl-client.xml");
+    hbt.getConfiguration().addResource(hbt.getConfiguration().get(SSLFactory.SSL_CLIENT_CONF_KEY));
+    hbt.getConfiguration().addResource(hbt.getConfiguration().get(SSLFactory.SSL_SERVER_CONF_KEY));
 
     MiniHBaseCluster cluster = hbt.startMiniCluster();
     try {
@@ -198,13 +198,13 @@ public class TestHBaseTestingUtility {
 
     htu1.startMiniCluster();
     htu1.getDFSCluster().getFileSystem().create(foo);
-    assertTrue( htu1.getDFSCluster().getFileSystem().exists(foo));
+    assertTrue(htu1.getDFSCluster().getFileSystem().exists(foo));
     htu1.shutdownMiniCluster();
 
     htu1.startMiniCluster();
-    assertFalse( htu1.getDFSCluster().getFileSystem().exists(foo));
+    assertFalse(htu1.getDFSCluster().getFileSystem().exists(foo));
     htu1.getDFSCluster().getFileSystem().create(foo);
-    assertTrue( htu1.getDFSCluster().getFileSystem().exists(foo));
+    assertTrue(htu1.getDFSCluster().getFileSystem().exists(foo));
     htu1.shutdownMiniCluster();
   }
 
@@ -275,7 +275,9 @@ public class TestHBaseTestingUtility {
       List<Integer> clientPortListInCluster = cluster1.getClientPortList();
 
       for (i = 0; i < clientPortListInCluster.size(); i++) {
-        assertEquals(clientPortListInCluster.get(i).intValue(), clientPortList1[i]);
+        // cannot assert the specific port due to the port conflict in which situation
+        // it always chooses a bigger port by +1. The below is the same.
+        assertTrue(clientPortListInCluster.get(i).intValue() >= clientPortList1[i]);
       }
     } finally {
       hbt.shutdownMiniZKCluster();
@@ -292,11 +294,11 @@ public class TestHBaseTestingUtility {
 
       for (i = 0, j = 0; i < clientPortListInCluster.size(); i++) {
         if (i < clientPortList2.length) {
-          assertEquals(clientPortListInCluster.get(i).intValue(), clientPortList2[i]);
+          assertTrue(clientPortListInCluster.get(i).intValue() >= clientPortList2[i]);
         } else {
           // servers with no specified client port will use defaultClientPort or some other ports
           // based on defaultClientPort
-          assertEquals(clientPortListInCluster.get(i).intValue(), defaultClientPort + j);
+          assertTrue(clientPortListInCluster.get(i).intValue() >= defaultClientPort + j);
           j++;
         }
       }
@@ -317,9 +319,9 @@ public class TestHBaseTestingUtility {
         // Servers will only use valid client ports; if ports are not specified or invalid,
         // the default port or a port based on default port will be used.
         if (i < clientPortList3.length && clientPortList3[i] > 0) {
-          assertEquals(clientPortListInCluster.get(i).intValue(), clientPortList3[i]);
+          assertTrue(clientPortListInCluster.get(i).intValue() >= clientPortList3[i]);
         } else {
-          assertEquals(clientPortListInCluster.get(i).intValue(), defaultClientPort + j);
+          assertTrue(clientPortListInCluster.get(i).intValue() >= defaultClientPort + j);
           j++;
         }
       }
@@ -343,9 +345,9 @@ public class TestHBaseTestingUtility {
         // Servers will only use valid client ports; if ports are not specified or invalid,
         // the default port or a port based on default port will be used.
         if (i < clientPortList4.length && clientPortList4[i] > 0) {
-          assertEquals(clientPortListInCluster.get(i).intValue(), clientPortList4[i]);
+          assertTrue(clientPortListInCluster.get(i).intValue() >= clientPortList4[i]);
         } else {
-          assertEquals(clientPortListInCluster.get(i).intValue(), defaultClientPort + j);
+          assertTrue(clientPortListInCluster.get(i).intValue() >= defaultClientPort + j);
           j +=2;
         }
       }
@@ -445,10 +447,14 @@ public class TestHBaseTestingUtility {
     HBaseTestingUtility htu = new HBaseTestingUtility(defaultConfig);
     try {
       MiniHBaseCluster defaultCluster = htu.startMiniCluster();
+      final String masterHostPort =
+          defaultCluster.getMaster().getServerName().getAddress().toString();
       assertNotEquals(HConstants.DEFAULT_MASTER_INFOPORT,
           defaultCluster.getConfiguration().getInt(HConstants.MASTER_INFO_PORT, 0));
       assertNotEquals(HConstants.DEFAULT_REGIONSERVER_INFOPORT,
           defaultCluster.getConfiguration().getInt(HConstants.REGIONSERVER_INFO_PORT, 0));
+      assertEquals(masterHostPort,
+          defaultCluster.getConfiguration().get(HConstants.MASTER_ADDRS_KEY));
     } finally {
       htu.shutdownMiniCluster();
     }
@@ -462,10 +468,14 @@ public class TestHBaseTestingUtility {
     htu = new HBaseTestingUtility(altConfig);
     try {
       MiniHBaseCluster customCluster = htu.startMiniCluster();
+      final String masterHostPort =
+          customCluster.getMaster().getServerName().getAddress().toString();
       assertEquals(nonDefaultMasterInfoPort,
-              customCluster.getConfiguration().getInt(HConstants.MASTER_INFO_PORT, 0));
+          customCluster.getConfiguration().getInt(HConstants.MASTER_INFO_PORT, 0));
       assertEquals(nonDefaultRegionServerPort,
           customCluster.getConfiguration().getInt(HConstants.REGIONSERVER_INFO_PORT, 0));
+      assertEquals(masterHostPort,
+          customCluster.getConfiguration().get(HConstants.MASTER_ADDRS_KEY));
     } finally {
       htu.shutdownMiniCluster();
     }

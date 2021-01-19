@@ -23,7 +23,6 @@ import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.hbase.shaded.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ClusterStatusProtos;
 
@@ -58,6 +57,15 @@ public class RegionState {
                        // with CLOSED, but for some operations such as merge/split, we can not
                        // apply it to a region in this state, as it may lead to data loss as we
                        // may have some data in recovered edits.
+
+    public boolean matches(State... expected) {
+      for (State state : expected) {
+        if (this == state) {
+          return true;
+        }
+      }
+      return false;
+    }
 
     /**
      * Convert to protobuf ClusterStatusProtos.RegionState.State
@@ -179,7 +187,6 @@ public class RegionState {
   // The duration of region in transition
   private long ritDuration;
 
-  @VisibleForTesting
   public static RegionState createForTesting(RegionInfo region, State state) {
     return new RegionState(region, state, System.currentTimeMillis(), null);
   }
@@ -237,6 +244,10 @@ public class RegionState {
 
   public boolean isClosed() {
     return state == State.CLOSED;
+  }
+
+  public boolean isClosedOrAbnormallyClosed() {
+    return isClosed() || this.state == State.ABNORMALLY_CLOSED;
   }
 
   public boolean isOpening() {

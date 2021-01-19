@@ -20,17 +20,20 @@ package org.apache.hadoop.hbase.master;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
-import org.apache.hadoop.hbase.HRegionInfo;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.RegionInfoBuilder;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.master.assignment.AssignmentManager;
 import org.apache.hadoop.hbase.master.assignment.RegionStates;
 import org.apache.hadoop.hbase.regionserver.MetricsRegionServer;
@@ -66,11 +69,11 @@ public class TestMasterStatusServlet {
 
   static final ServerName FAKE_HOST =
       ServerName.valueOf("fakehost", 12345, 1234567890);
-  static final HTableDescriptor FAKE_TABLE =
-    new HTableDescriptor(TableName.valueOf("mytable"));
-  static final HRegionInfo FAKE_HRI =
-      new HRegionInfo(FAKE_TABLE.getTableName(),
-          Bytes.toBytes("a"), Bytes.toBytes("b"));
+  static final TableDescriptor FAKE_TABLE =
+    TableDescriptorBuilder.newBuilder(TableName.valueOf("mytable")).build();
+
+  static final RegionInfo FAKE_HRI = RegionInfoBuilder.newBuilder(FAKE_TABLE.getTableName())
+    .setStartKey(Bytes.toBytes("a")).setEndKey(Bytes.toBytes("b")).build();
 
   @Before
   public void setupBasicMocks() {
@@ -111,18 +114,17 @@ public class TestMasterStatusServlet {
 
     MetricsRegionServer rms = Mockito.mock(MetricsRegionServer.class);
     Mockito.doReturn(new MetricsRegionServerWrapperStub()).when(rms).getRegionServerWrapper();
-    Mockito.doReturn(rms).when(master).getRegionServerMetrics();
+    Mockito.doReturn(rms).when(master).getMetrics();
 
     // Mock admin
     admin = Mockito.mock(Admin.class);
   }
 
   private void setupMockTables() throws IOException {
-    HTableDescriptor tables[] = new HTableDescriptor[] {
-        new HTableDescriptor(TableName.valueOf("foo")),
-        new HTableDescriptor(TableName.valueOf("bar"))
-    };
-    Mockito.doReturn(tables).when(admin).listTables();
+    List<TableDescriptor> tables =
+      Arrays.asList(TableDescriptorBuilder.newBuilder(TableName.valueOf("foo")).build(),
+        TableDescriptorBuilder.newBuilder(TableName.valueOf("bar")).build());
+    Mockito.doReturn(tables).when(admin).listTableDescriptors();
   }
 
   @Test

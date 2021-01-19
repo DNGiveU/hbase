@@ -32,8 +32,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
-
 /**
  * ChoreService is a service that can be used to schedule instances of {@link ScheduledChore} to run
  * periodically while sharing threads. The ChoreService is backed by a
@@ -95,7 +93,6 @@ public class ChoreService implements ChoreServicer {
    *          spawned by this service
    */
   @InterfaceAudience.Private
-  @VisibleForTesting
   public ChoreService(final String coreThreadPoolPrefix) {
     this(coreThreadPoolPrefix, MIN_CORE_POOL_SIZE, false);
   }
@@ -150,6 +147,11 @@ public class ChoreService implements ChoreServicer {
     }
 
     try {
+      if (chore.getPeriod() <= 0) {
+        LOG.info("Chore {} is disabled because its period is not positive.", chore);
+        return false;
+      }
+      LOG.info("Chore {} is enabled.", chore);
       chore.setChoreServicer(this);
       ScheduledFuture<?> future =
           scheduler.scheduleAtFixedRate(chore, chore.getInitialDelay(), chore.getPeriod(),
@@ -168,9 +170,7 @@ public class ChoreService implements ChoreServicer {
    * @param chore The Chore to be rescheduled. If the chore is not scheduled with this ChoreService
    *          yet then this call is equivalent to a call to scheduleChore.
    */
-  private synchronized void rescheduleChore(ScheduledChore chore) {
-    if (chore == null) return;
-
+  private void rescheduleChore(ScheduledChore chore) {
     if (scheduledChores.containsKey(chore)) {
       ScheduledFuture<?> future = scheduledChores.get(chore);
       future.cancel(false);
@@ -211,12 +211,11 @@ public class ChoreService implements ChoreServicer {
   @InterfaceAudience.Private
   @Override
   public synchronized boolean triggerNow(ScheduledChore chore) {
-    if (chore == null) {
-      return false;
-    } else {
+    if (chore != null) {
       rescheduleChore(chore);
       return true;
     }
+    return false;
   }
 
   /**
@@ -347,17 +346,14 @@ public class ChoreService implements ChoreServicer {
   }
 
   private void cancelAllChores(final boolean mayInterruptIfRunning) {
-    ArrayList<ScheduledChore> choresToCancel = new ArrayList<>(scheduledChores.keySet().size());
     // Build list of chores to cancel so we can iterate through a set that won't change
     // as chores are cancelled. If we tried to cancel each chore while iterating through
     // keySet the results would be undefined because the keySet would be changing
-    for (ScheduledChore chore : scheduledChores.keySet()) {
-      choresToCancel.add(chore);
-    }
+    ArrayList<ScheduledChore> choresToCancel = new ArrayList<>(scheduledChores.keySet());
+
     for (ScheduledChore chore : choresToCancel) {
       cancelChore(chore, mayInterruptIfRunning);
     }
-    choresToCancel.clear();
   }
 
   /**

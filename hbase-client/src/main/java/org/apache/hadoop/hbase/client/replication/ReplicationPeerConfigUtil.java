@@ -27,7 +27,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
-
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.CompoundConfiguration;
@@ -44,7 +43,8 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+import org.apache.hbase.thirdparty.com.google.common.base.Splitter;
+import org.apache.hbase.thirdparty.com.google.common.base.Strings;
 import org.apache.hbase.thirdparty.com.google.common.collect.Lists;
 import org.apache.hbase.thirdparty.com.google.protobuf.ByteString;
 import org.apache.hbase.thirdparty.com.google.protobuf.UnsafeByteOperations;
@@ -60,6 +60,8 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos;
 public final class ReplicationPeerConfigUtil {
 
   private static final Logger LOG = LoggerFactory.getLogger(ReplicationPeerConfigUtil.class);
+  public static final String HBASE_REPLICATION_PEER_BASE_CONFIG =
+    "hbase.replication.peer.base.config";
 
   private ReplicationPeerConfigUtil() {}
 
@@ -243,7 +245,7 @@ public final class ReplicationPeerConfigUtil {
   /**
    * @param bytes Content of a peer znode.
    * @return ClusterKey parsed from the passed bytes.
-   * @throws DeserializationException
+   * @throws DeserializationException deserialization exception
    */
   public static ReplicationPeerConfig parsePeerFrom(final byte[] bytes)
       throws DeserializationException {
@@ -329,9 +331,9 @@ public final class ReplicationPeerConfigUtil {
   public static ReplicationProtos.ReplicationPeer convert(ReplicationPeerConfig peerConfig) {
     ReplicationProtos.ReplicationPeer.Builder builder =
         ReplicationProtos.ReplicationPeer.newBuilder();
-    if (peerConfig.getClusterKey() != null) {
-      builder.setClusterkey(peerConfig.getClusterKey());
-    }
+    // we used to set cluster key as required so here we must always set it, until we can make sure
+    // that no one uses the old proto file.
+    builder.setClusterkey(peerConfig.getClusterKey() != null ? peerConfig.getClusterKey() : "");
     if (peerConfig.getReplicationEndpointImpl() != null) {
       builder.setReplicationEndpointImpl(peerConfig.getReplicationEndpointImpl());
     }
@@ -387,7 +389,7 @@ public final class ReplicationPeerConfigUtil {
   }
 
   /**
-   * @param peerConfig
+   * @param peerConfig peer config of replication peer
    * @return Serialized protobuf of <code>peerConfig</code> with pb magic prefix prepended suitable
    *         for use as content of a this.peersZNode; i.e. the content of PEER_ID znode under
    *         /hbase/replication/peers/PEER_ID
@@ -445,30 +447,91 @@ public final class ReplicationPeerConfigUtil {
     if (preTableCfs == null) {
       builder.setTableCFsMap(tableCfs);
     } else {
-      Map<TableName, List<String>> newTableCfs = copyTableCFsMap(preTableCfs);
-      for (Map.Entry<TableName, ? extends Collection<String>> entry : tableCfs.entrySet()) {
-        TableName table = entry.getKey();
-        Collection<String> appendCfs = entry.getValue();
-        if (newTableCfs.containsKey(table)) {
-          List<String> cfs = newTableCfs.get(table);
-          if (cfs == null || appendCfs == null || appendCfs.isEmpty()) {
-            newTableCfs.put(table, null);
-          } else {
-            Set<String> cfSet = new HashSet<String>(cfs);
-            cfSet.addAll(appendCfs);
-            newTableCfs.put(table, Lists.newArrayList(cfSet));
-          }
-        } else {
-          if (appendCfs == null || appendCfs.isEmpty()) {
-            newTableCfs.put(table, null);
-          } else {
-            newTableCfs.put(table, Lists.newArrayList(appendCfs));
-          }
-        }
-      }
-      builder.setTableCFsMap(newTableCfs);
+      builder.setTableCFsMap(mergeTableCFs(preTableCfs, tableCfs));
     }
     return builder.build();
+  }
+
+  /**
+   * Helper method to add/removev base peer configs from Configuration to ReplicationPeerConfig
+   *
+   * This merges the user supplied peer configuration
+   * {@link org.apache.hadoop.hbase.replication.ReplicationPeerConfig} with peer configs
+   * provided as property hbase.replication.peer.base.configs in hbase configuration.
+   * Expected format for this hbase configuration is "k1=v1;k2=v2,v2_1;k3=""".
+   * If value is empty, it will remove the existing key-value from peer config.
+   *
+   * @param conf Configuration
+   * @return ReplicationPeerConfig containing updated configs.
+   */
+  public static ReplicationPeerConfig updateReplicationBasePeerConfigs(Configuration conf,
+    ReplicationPeerConfig receivedPeerConfig) {
+    ReplicationPeerConfigBuilder copiedPeerConfigBuilder = ReplicationPeerConfig.
+      newBuilder(receivedPeerConfig);
+
+    Map<String, String> receivedPeerConfigMap = receivedPeerConfig.getConfiguration();
+    String basePeerConfigs = conf.get(HBASE_REPLICATION_PEER_BASE_CONFIG, "");
+    if (basePeerConfigs.length() != 0) {
+      Map<String, String> basePeerConfigMap = Splitter.on(';').trimResults().omitEmptyStrings()
+        .withKeyValueSeparator("=").split(basePeerConfigs);
+      for (Map.Entry<String, String> entry : basePeerConfigMap.entrySet()) {
+        String configName = entry.getKey();
+        String configValue = entry.getValue();
+        // If the config is provided with empty value, for eg. k1="",
+        // we remove it from peer config. Providing config with empty value
+        // is required so that it doesn't remove any other config unknowingly.
+        if (Strings.isNullOrEmpty(configValue)) {
+          copiedPeerConfigBuilder.removeConfiguration(configName);
+        } else if (!receivedPeerConfigMap.getOrDefault(configName, "").equals(configValue)) {
+          // update the configuration if exact config and value doesn't exists
+          copiedPeerConfigBuilder.putConfiguration(configName, configValue);
+        }
+      }
+    }
+
+    return copiedPeerConfigBuilder.build();
+  }
+
+  public static ReplicationPeerConfig appendExcludeTableCFsToReplicationPeerConfig(
+      Map<TableName, List<String>> excludeTableCfs, ReplicationPeerConfig peerConfig)
+      throws ReplicationException {
+    if (excludeTableCfs == null) {
+      throw new ReplicationException("exclude tableCfs is null");
+    }
+    ReplicationPeerConfigBuilder builder = ReplicationPeerConfig.newBuilder(peerConfig);
+    Map<TableName, List<String>> preExcludeTableCfs = peerConfig.getExcludeTableCFsMap();
+    if (preExcludeTableCfs == null) {
+      builder.setExcludeTableCFsMap(excludeTableCfs);
+    } else {
+      builder.setExcludeTableCFsMap(mergeTableCFs(preExcludeTableCfs, excludeTableCfs));
+    }
+    return builder.build();
+  }
+
+  private static Map<TableName, List<String>> mergeTableCFs(
+      Map<TableName, List<String>> preTableCfs, Map<TableName, List<String>> tableCfs) {
+    Map<TableName, List<String>> newTableCfs = copyTableCFsMap(preTableCfs);
+    for (Map.Entry<TableName, ? extends Collection<String>> entry : tableCfs.entrySet()) {
+      TableName table = entry.getKey();
+      Collection<String> appendCfs = entry.getValue();
+      if (newTableCfs.containsKey(table)) {
+        List<String> cfs = newTableCfs.get(table);
+        if (cfs == null || appendCfs == null || appendCfs.isEmpty()) {
+          newTableCfs.put(table, null);
+        } else {
+          Set<String> cfSet = new HashSet<String>(cfs);
+          cfSet.addAll(appendCfs);
+          newTableCfs.put(table, Lists.newArrayList(cfSet));
+        }
+      } else {
+        if (appendCfs == null || appendCfs.isEmpty()) {
+          newTableCfs.put(table, null);
+        } else {
+          newTableCfs.put(table, Lists.newArrayList(appendCfs));
+        }
+      }
+    }
+    return newTableCfs;
   }
 
   private static Map<TableName, List<String>>
@@ -519,6 +582,49 @@ public final class ReplicationPeerConfigUtil {
     return builder.build();
   }
 
+  public static ReplicationPeerConfig removeExcludeTableCFsFromReplicationPeerConfig(
+      Map<TableName, List<String>> excludeTableCfs, ReplicationPeerConfig peerConfig, String id)
+      throws ReplicationException {
+    if (excludeTableCfs == null) {
+      throw new ReplicationException("exclude tableCfs is null");
+    }
+    Map<TableName, List<String>> preExcludeTableCfs = peerConfig.getExcludeTableCFsMap();
+    if (preExcludeTableCfs == null) {
+      throw new ReplicationException("exclude-Table-Cfs for peer: " + id + " is null");
+    }
+    Map<TableName, List<String>> newExcludeTableCfs = copyTableCFsMap(preExcludeTableCfs);
+    for (Map.Entry<TableName, ? extends Collection<String>> entry : excludeTableCfs.entrySet()) {
+      TableName table = entry.getKey();
+      Collection<String> removeCfs = entry.getValue();
+      if (newExcludeTableCfs.containsKey(table)) {
+        List<String> cfs = newExcludeTableCfs.get(table);
+        if (cfs == null && (removeCfs == null || removeCfs.isEmpty())) {
+          newExcludeTableCfs.remove(table);
+        } else if (cfs != null && (removeCfs != null && !removeCfs.isEmpty())) {
+          Set<String> cfSet = new HashSet<String>(cfs);
+          cfSet.removeAll(removeCfs);
+          if (cfSet.isEmpty()) {
+            newExcludeTableCfs.remove(table);
+          } else {
+            newExcludeTableCfs.put(table, Lists.newArrayList(cfSet));
+          }
+        } else if (cfs == null && (removeCfs != null && !removeCfs.isEmpty())) {
+          throw new ReplicationException("Cannot remove cf of table: " + table
+              + " which doesn't specify cfs from exclude-table-cfs config in peer: " + id);
+        } else if (cfs != null && (removeCfs == null || removeCfs.isEmpty())) {
+          throw new ReplicationException("Cannot remove table: " + table
+              + " which has specified cfs from exclude-table-cfs config in peer: " + id);
+        }
+      } else {
+        throw new ReplicationException(
+            "No table: " + table + " in exclude-table-cfs config of peer: " + id);
+      }
+    }
+    ReplicationPeerConfigBuilder builder = ReplicationPeerConfig.newBuilder(peerConfig);
+    builder.setExcludeTableCFsMap(newExcludeTableCfs);
+    return builder.build();
+  }
+
   /**
    * Returns the configuration needed to talk to the remote slave cluster.
    * @param conf the base configuration
@@ -542,7 +648,6 @@ public final class ReplicationPeerConfigUtil {
       compound.addStringMap(peerConfig.getConfiguration());
       return compound;
     }
-
     return otherConf;
   }
 }

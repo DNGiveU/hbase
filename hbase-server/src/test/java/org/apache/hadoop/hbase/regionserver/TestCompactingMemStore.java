@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,6 +18,8 @@
 package org.apache.hadoop.hbase.regionserver;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -25,6 +27,8 @@ import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellComparator;
@@ -32,16 +36,19 @@ import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HRegionInfo;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeepDeletedCells;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.KeyValueTestUtil;
 import org.apache.hadoop.hbase.MemoryCompactionPolicy;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
+import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.client.TableDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.exceptions.IllegalArgumentIOException;
 import org.apache.hadoop.hbase.io.util.MemorySizeUtil;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
@@ -56,6 +63,7 @@ import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+import org.mockito.Mockito;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -103,24 +111,48 @@ public class TestCompactingMemStore extends TestDefaultMemStore {
     conf.setBoolean(MemStoreLAB.USEMSLAB_KEY, true);
     conf.setFloat(MemStoreLAB.CHUNK_POOL_MAXSIZE_KEY, 0.2f);
     conf.setInt(HRegion.MEMSTORE_PERIODIC_FLUSH_INTERVAL, 1000);
-    HBaseTestingUtility hbaseUtility = HBaseTestingUtility.createLocalHTU(conf);
-    HColumnDescriptor hcd = new HColumnDescriptor(FAMILY);
-    HTableDescriptor htd = new HTableDescriptor(TableName.valueOf("foobar"));
-    htd.addFamily(hcd);
-    HRegionInfo info =
-        new HRegionInfo(TableName.valueOf("foobar"), null, null, false);
-    WAL wal = hbaseUtility.createWal(conf, hbaseUtility.getDataTestDir(), info);
-    this.region = HRegion.createHRegion(info, hbaseUtility.getDataTestDir(), conf, htd, wal, true);
-    //this.region = hbaseUtility.createTestRegion("foobar", hcd);
-    this.regionServicesForStores = region.getRegionServicesForStores();
-    this.store = new HStore(region, hcd, conf);
+    HBaseTestingUtility hbaseUtility = new HBaseTestingUtility(conf);
+    ColumnFamilyDescriptor familyDescriptor = ColumnFamilyDescriptorBuilder.of(FAMILY);
+    TableDescriptor tableDescriptor = TableDescriptorBuilder.newBuilder(TableName.valueOf("foobar"))
+      .setColumnFamily(familyDescriptor).build();
+    RegionInfo info = RegionInfoBuilder.newBuilder(TableName.valueOf("foobar")).build();
+    WAL wal = HBaseTestingUtility.createWal(conf, hbaseUtility.getDataTestDir(), info);
+    this.region = HRegion.createHRegion(info, hbaseUtility.getDataTestDir(), conf,
+      tableDescriptor, wal, true);
+    this.regionServicesForStores = Mockito.spy(region.getRegionServicesForStores());
+    ThreadPoolExecutor pool = (ThreadPoolExecutor) Executors.newFixedThreadPool(1);
+    Mockito.when(regionServicesForStores.getInMemoryCompactionPool()).thenReturn(pool);
+    this.store = new HStore(region, familyDescriptor, conf, false);
 
     long globalMemStoreLimit = (long) (ManagementFactory.getMemoryMXBean().getHeapMemoryUsage()
         .getMax() * MemorySizeUtil.getGlobalMemStoreHeapPercent(conf, false));
-    chunkCreator = ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT, false,
+    chunkCreator = ChunkCreator.initialize(MemStoreLAB.CHUNK_SIZE_DEFAULT, false,
         globalMemStoreLimit, 0.4f, MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT,
-            null);
-    assertTrue(chunkCreator != null);
+            null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
+    assertNotNull(chunkCreator);
+  }
+
+  /**
+   * A simple test which flush in memory affect timeOfOldestEdit
+   */
+  @Test
+  public void testTimeOfOldestEdit() {
+    assertEquals(Long.MAX_VALUE,  memstore.timeOfOldestEdit());
+    final byte[] r = Bytes.toBytes("r");
+    final byte[] f = Bytes.toBytes("f");
+    final byte[] q = Bytes.toBytes("q");
+    final byte[] v = Bytes.toBytes("v");
+    final KeyValue kv = new KeyValue(r, f, q, v);
+    memstore.add(kv, null);
+    long timeOfOldestEdit = memstore.timeOfOldestEdit();
+    assertNotEquals(Long.MAX_VALUE, timeOfOldestEdit);
+
+    ((CompactingMemStore)memstore).flushInMemory();
+    assertEquals(timeOfOldestEdit, memstore.timeOfOldestEdit());
+    memstore.add(kv, null);
+    assertEquals(timeOfOldestEdit, memstore.timeOfOldestEdit());
+    memstore.snapshot();
+    assertEquals(Long.MAX_VALUE, memstore.timeOfOldestEdit());
   }
 
   /**
@@ -314,7 +346,6 @@ public class TestCompactingMemStore extends TestDefaultMemStore {
   /**
    * Tests that the timeOfOldestEdit is updated correctly for the
    * various edit operations in memstore.
-   * @throws Exception
    */
   @Override
   @Test
@@ -679,7 +710,7 @@ public class TestCompactingMemStore extends TestDefaultMemStore {
     mss = memstore.getFlushableSize();
     MemStoreSnapshot snapshot = memstore.snapshot(); // push keys to snapshot
     // simulate flusher
-    region.decrMemStoreSize(mss.getDataSize(), mss.getHeapSize(), mss.getOffHeapSize());
+    region.decrMemStoreSize(mss);
     ImmutableSegment s = memstore.getSnapshot();
     assertEquals(7, s.getCellsCount());
     assertEquals(0, regionServicesForStores.getMemStoreSize());
@@ -756,7 +787,7 @@ public class TestCompactingMemStore extends TestDefaultMemStore {
     mss = memstore.getFlushableSize();
     MemStoreSnapshot snapshot = memstore.snapshot(); // push keys to snapshot
     // simulate flusher
-    region.decrMemStoreSize(mss.getDataSize(), mss.getHeapSize(), mss.getOffHeapSize());
+    region.decrMemStoreSize(mss);
     ImmutableSegment s = memstore.getSnapshot();
     assertEquals(4, s.getCellsCount());
     assertEquals(0, regionServicesForStores.getMemStoreSize());
@@ -831,6 +862,7 @@ public class TestCompactingMemStore extends TestDefaultMemStore {
     byte[] qf = Bytes.toBytes("testqualifier");
     long size = hmc.getActive().getDataSize();
     long heapOverhead = hmc.getActive().getHeapSize();
+    int cellsCount = hmc.getActive().getCellsCount();
     int totalLen = 0;
     for (int i = 0; i < keys.length; i++) {
       long timestamp = System.currentTimeMillis();
@@ -843,7 +875,8 @@ public class TestCompactingMemStore extends TestDefaultMemStore {
       LOG.debug("added kv: " + kv.getKeyString() + ", timestamp:" + kv.getTimestamp());
     }
     regionServicesForStores.addMemStoreSize(hmc.getActive().getDataSize() - size,
-        hmc.getActive().getHeapSize() - heapOverhead, 0);
+      hmc.getActive().getHeapSize() - heapOverhead, 0,
+      hmc.getActive().getCellsCount() - cellsCount);
     return totalLen;
   }
 
@@ -853,6 +886,7 @@ public class TestCompactingMemStore extends TestDefaultMemStore {
     byte[] qf = Bytes.toBytes("testqualifier");
     long size = hmc.getActive().getDataSize();
     long heapOverhead = hmc.getActive().getHeapSize();
+    int cellsCount = hmc.getActive().getCellsCount();
     int totalLen = 0;
     for (int i = 0; i < keys.length; i++) {
       long timestamp = System.currentTimeMillis();
@@ -864,7 +898,7 @@ public class TestCompactingMemStore extends TestDefaultMemStore {
       LOG.debug("added kv: " + kv.getKeyString() + ", timestamp:" + kv.getTimestamp());
     }
     regionServicesForStores.addMemStoreSize(hmc.getActive().getDataSize() - size,
-            hmc.getActive().getHeapSize() - heapOverhead, 0);
+      hmc.getActive().getHeapSize() - heapOverhead, 0, cellsCount);
     return totalLen;
   }
 
@@ -873,12 +907,9 @@ public class TestCompactingMemStore extends TestDefaultMemStore {
 
     @Override
     public long currentTime() {
-            return t;
-        }
-      public void setCurrentTimeMillis(long t) {
-        this.t = t;
-      }
+      return t;
     }
+  }
 
   static protected class MyCompactingMemStore extends CompactingMemStore {
 

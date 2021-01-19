@@ -20,11 +20,9 @@ package org.apache.hadoop.hbase;
 
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * ScheduledChore is a task performed on a period in hbase. ScheduledChores become active once
@@ -116,13 +114,8 @@ public abstract class ScheduledChore implements Runnable {
    * This constructor is for test only. It allows us to create an object and to call chore() on it.
    */
   @InterfaceAudience.Private
-  @VisibleForTesting
   protected ScheduledChore() {
-    this.name = null;
-    this.stopper = null;
-    this.period = 0;
-    this.initialDelay = DEFAULT_INITIAL_DELAY;
-    this.timeUnit = DEFAULT_TIME_UNIT;
+    this("TestChore", null, 0, DEFAULT_INITIAL_DELAY, DEFAULT_TIME_UNIT);
   }
 
   /**
@@ -173,20 +166,31 @@ public abstract class ScheduledChore implements Runnable {
     updateTimeTrackingBeforeRun();
     if (missedStartTime() && isScheduled()) {
       onChoreMissedStartTime();
-      if (LOG.isInfoEnabled()) LOG.info("Chore: " + getName() + " missed its start time");
+      LOG.info("Chore: {} missed its start time", getName());
     } else if (stopper.isStopped() || !isScheduled()) {
       cancel(false);
       cleanup();
-      if (LOG.isInfoEnabled()) LOG.info("Chore: " + getName() + " was stopped");
+      LOG.info("Chore: {} was stopped", getName());
     } else {
       try {
+        // TODO: Histogram metrics per chore name.
+        // For now, just measure and log if DEBUG level logging is enabled.
+        long start = 0;
+        if (LOG.isDebugEnabled()) {
+          start = System.nanoTime();
+        }
         if (!initialChoreComplete) {
           initialChoreComplete = initialChore();
         } else {
           chore();
         }
+        if (LOG.isDebugEnabled() && start > 0) {
+          long end = System.nanoTime();
+          LOG.debug("{} execution time: {} ms.", getName(),
+            TimeUnit.NANOSECONDS.toMillis(end - start));
+        }
       } catch (Throwable t) {
-        if (LOG.isErrorEnabled()) LOG.error("Caught error", t);
+        LOG.error("Caught error", t);
         if (this.stopper.isStopped()) {
           cancel(false);
           cleanup();
@@ -263,7 +267,7 @@ public abstract class ScheduledChore implements Runnable {
       choreServicer.cancelChore(this, false);
     }
     choreServicer = service;
-    timeOfThisRun = System.currentTimeMillis();
+    timeOfThisRun = -1;
   }
 
   public synchronized void cancel() {
@@ -306,17 +310,17 @@ public abstract class ScheduledChore implements Runnable {
     return initialChoreComplete;
   }
 
-  @VisibleForTesting
+  @InterfaceAudience.Private
   synchronized ChoreServicer getChoreServicer() {
     return choreServicer;
   }
 
-  @VisibleForTesting
+  @InterfaceAudience.Private
   synchronized long getTimeOfLastRun() {
     return timeOfLastRun;
   }
 
-  @VisibleForTesting
+  @InterfaceAudience.Private
   synchronized long getTimeOfThisRun() {
     return timeOfThisRun;
   }
@@ -329,7 +333,6 @@ public abstract class ScheduledChore implements Runnable {
   }
 
   @InterfaceAudience.Private
-  @VisibleForTesting
   public synchronized void choreForTesting() {
     chore();
   }
@@ -362,7 +365,7 @@ public abstract class ScheduledChore implements Runnable {
   @InterfaceAudience.Private
   @Override
   public String toString() {
-    return "[ScheduledChore: Name: " + getName() + " Period: " + getPeriod() + " Unit: "
-        + getTimeUnit() + "]";
+    return "ScheduledChore name=" + getName() + ", period=" + getPeriod() +
+      ", unit=" + getTimeUnit();
   }
 }

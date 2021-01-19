@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,8 +19,7 @@ package org.apache.hadoop.hbase.client.coprocessor;
 
 import static org.apache.hadoop.hbase.client.coprocessor.AggregationHelper.getParsedGenericInstance;
 import static org.apache.hadoop.hbase.client.coprocessor.AggregationHelper.validateArgAndGetPB;
-
-import com.google.protobuf.Message;
+import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
 
 import java.io.IOException;
 import java.util.Map;
@@ -29,7 +28,6 @@ import java.util.NavigableSet;
 import java.util.NoSuchElementException;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
-
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.client.AdvancedScanResultConsumer;
@@ -39,12 +37,15 @@ import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.coprocessor.ColumnInterpreter;
-import org.apache.hadoop.hbase.protobuf.generated.AggregateProtos.AggregateRequest;
-import org.apache.hadoop.hbase.protobuf.generated.AggregateProtos.AggregateResponse;
-import org.apache.hadoop.hbase.protobuf.generated.AggregateProtos.AggregateService;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ReflectionUtils;
 import org.apache.yetus.audience.InterfaceAudience;
+
+import org.apache.hbase.thirdparty.com.google.protobuf.Message;
+
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AggregateProtos.AggregateRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AggregateProtos.AggregateResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AggregateProtos.AggregateService;
 
 /**
  * This client class is for invoking the aggregate functions deployed on the Region Server side via
@@ -455,10 +456,10 @@ public final class AsyncAggregationClient {
   }
 
   public static <R, S, P extends Message, Q extends Message, T extends Message>
-          CompletableFuture<R> median(AsyncTable<AdvancedScanResultConsumer> table,
-          ColumnInterpreter<R, S, P, Q, T> ci, Scan scan) {
+      CompletableFuture<R> median(AsyncTable<AdvancedScanResultConsumer> table,
+      ColumnInterpreter<R, S, P, Q, T> ci, Scan scan) {
     CompletableFuture<R> future = new CompletableFuture<>();
-    sumByRegion(table, ci, scan).whenComplete((sumByRegion, error) -> {
+    addListener(sumByRegion(table, ci, scan), (sumByRegion, error) -> {
       if (error != null) {
         future.completeExceptionally(error);
       } else if (sumByRegion.isEmpty()) {

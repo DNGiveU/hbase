@@ -221,7 +221,8 @@ public class DataBlockEncodingTool {
 
       int kLen = currentKV.getKeyLength();
       int vLen = currentKV.getValueLength();
-      int cfLen = currentKV.getFamilyLength(currentKV.getFamilyOffset());
+      int cfOffset = currentKV.getFamilyOffset();
+      int cfLen = currentKV.getFamilyLength();
       int restLen = currentKV.getLength() - kLen - vLen;
 
       totalKeyLength += kLen;
@@ -740,12 +741,7 @@ public class DataBlockEncodingTool {
         "Excluding the first " + benchmarkNOmit + " times from statistics.");
 
     final Configuration conf = HBaseConfiguration.create();
-    try {
-      testCodecs(conf, kvLimit, pathName, compressionName, doBenchmark,
-          doVerify);
-    } finally {
-      (new CacheConfig(conf)).getBlockCache().shutdown();
-    }
+    testCodecs(conf, kvLimit, pathName, compressionName, doBenchmark, doVerify);
   }
 
 }

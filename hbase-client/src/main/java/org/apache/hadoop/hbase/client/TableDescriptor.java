@@ -23,6 +23,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 import org.apache.hadoop.hbase.HConstants;
@@ -176,8 +177,12 @@ public interface TableDescriptor {
    */
   TableName getTableName();
 
-  @Deprecated
-  String getOwnerString();
+  /**
+   * Get the region server group this table belongs to. The regions of this table will be placed
+   * only on the region servers within this group. If not present, will be placed on
+   * {@link org.apache.hadoop.hbase.rsgroup.RSGroupInfo#DEFAULT_GROUP}.
+   */
+  Optional<String> getRegionServerGroup();
 
   /**
    * Getter for accessing the metadata associated with the key.
@@ -239,6 +244,22 @@ public interface TableDescriptor {
   boolean isCompactionEnabled();
 
   /**
+   * Check if the split enable flag of the table is true. If flag is false
+   * then no region split will be done.
+   *
+   * @return true if table region split enabled
+   */
+  boolean isSplitEnabled();
+
+  /**
+   * Check if the merge enable flag of the table is true. If flag is false
+   * then no region merge will be done.
+   *
+   * @return true if table region merge enabled
+   */
+  boolean isMergeEnabled();
+
+  /**
    * Checks if this table is <code> hbase:meta </code> region.
    *
    * @return true if this table is <code> hbase:meta </code> region
@@ -283,6 +304,12 @@ public interface TableDescriptor {
    * @return true if all columns in the table should be read only
    */
   boolean isReadOnly();
+
+  /**
+   * @return Name of this table and then a map of all of the column family descriptors (with only
+   *         the non-default column family attributes)
+   */
+  String toStringCustomizedValues();
 
   /**
    * Check if any of the table's cfs' replication scope are set to

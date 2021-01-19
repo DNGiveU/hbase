@@ -34,7 +34,7 @@ import org.apache.hadoop.hbase.procedure2.store.wal.WALProcedureStore;
 import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.ModifyRegionUtils;
 import org.junit.After;
 import org.junit.Before;
@@ -144,7 +144,7 @@ public class TestMasterFailoverWithProcedures {
     byte[][] splitKeys = null;
     RegionInfo[] regions = MasterProcedureTestingUtility.createTable(
         getMasterProcedureExecutor(), tableName, splitKeys, "f1", "f2");
-    Path tableDir = FSUtils.getTableDir(getRootDir(), tableName);
+    Path tableDir = CommonFSUtils.getTableDir(getRootDir(), tableName);
     MasterProcedureTestingUtility.validateTableCreation(
         UTIL.getHBaseCluster().getMaster(), tableName, regions, "f1", "f2");
     UTIL.getAdmin().disableTable(tableName);
@@ -205,7 +205,7 @@ public class TestMasterFailoverWithProcedures {
     UTIL.waitUntilAllRegionsAssigned(tableName);
 
     // validate the table regions and layout
-    regions = UTIL.getAdmin().getTableRegions(tableName).toArray(new RegionInfo[0]);
+    regions = UTIL.getAdmin().getRegions(tableName).toArray(new RegionInfo[0]);
     if (preserveSplits) {
       assertEquals(1 + splitKeys.length, regions.length);
     } else {

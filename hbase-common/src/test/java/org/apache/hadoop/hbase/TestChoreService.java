@@ -28,14 +28,17 @@ import org.apache.hadoop.hbase.TestChoreService.ScheduledChoreSamples.FailInitia
 import org.apache.hadoop.hbase.TestChoreService.ScheduledChoreSamples.SampleStopper;
 import org.apache.hadoop.hbase.TestChoreService.ScheduledChoreSamples.SleepingChore;
 import org.apache.hadoop.hbase.TestChoreService.ScheduledChoreSamples.SlowChore;
-import org.apache.hadoop.hbase.testclassification.SmallTests;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.util.Threads;
 import org.junit.ClassRule;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+import org.junit.rules.TestName;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-@Category(SmallTests.class)
+@Category(MediumTests.class)
 public class TestChoreService {
 
   @ClassRule
@@ -43,6 +46,9 @@ public class TestChoreService {
       HBaseClassTestRule.forClass(TestChoreService.class);
 
   public static final Logger log = LoggerFactory.getLogger(TestChoreService.class);
+
+  @Rule
+  public TestName name = new TestName();
 
   /**
    * A few ScheduledChore samples that are useful for testing with ChoreService
@@ -354,17 +360,17 @@ public class TestChoreService {
   public void testFrequencyOfChores() throws InterruptedException {
     final int period = 100;
     // Small delta that acts as time buffer (allowing chores to complete if running slowly)
-    final int delta = 5;
+    final int delta = period/5;
     ChoreService service = new ChoreService("testFrequencyOfChores");
     CountingChore chore = new CountingChore("countingChore", period);
     try {
       service.scheduleChore(chore);
 
       Thread.sleep(10 * period + delta);
-      assertTrue(chore.getCountOfChoreCalls() == 11);
+      assertEquals("10 periods have elapsed.", 11, chore.getCountOfChoreCalls());
 
-      Thread.sleep(10 * period);
-      assertTrue(chore.getCountOfChoreCalls() == 21);
+      Thread.sleep(10 * period + delta);
+      assertEquals("20 periods have elapsed.", 21, chore.getCountOfChoreCalls());
     } finally {
       shutdownService(service);
     }
@@ -380,14 +386,14 @@ public class TestChoreService {
   @Test
   public void testForceTrigger() throws InterruptedException {
     final int period = 100;
-    final int delta = 10;
+    final int delta = period/10;
     ChoreService service = new ChoreService("testForceTrigger");
     final CountingChore chore = new CountingChore("countingChore", period);
     try {
       service.scheduleChore(chore);
       Thread.sleep(10 * period + delta);
 
-      assertTrue(chore.getCountOfChoreCalls() == 11);
+      assertEquals("10 periods have elapsed.", 11, chore.getCountOfChoreCalls());
 
       // Force five runs of the chore to occur, sleeping between triggers to ensure the
       // chore has time to run
@@ -402,12 +408,14 @@ public class TestChoreService {
       chore.triggerNow();
       Thread.sleep(delta);
 
-      assertTrue("" + chore.getCountOfChoreCalls(), chore.getCountOfChoreCalls() == 16);
+      assertEquals("Trigger was called 5 times after 10 periods.", 16,
+          chore.getCountOfChoreCalls());
 
       Thread.sleep(10 * period + delta);
 
       // Be loosey-goosey. It used to be '26' but it was a big flakey relying on timing.
-      assertTrue("" + chore.getCountOfChoreCalls(), chore.getCountOfChoreCalls() > 16);
+      assertTrue("Expected at least 16 invocations, instead got " + chore.getCountOfChoreCalls(),
+          chore.getCountOfChoreCalls() > 16);
     } finally {
       shutdownService(service);
     }
@@ -419,7 +427,7 @@ public class TestChoreService {
     ChoreService service = new ChoreService("testCorePoolIncrease", initialCorePoolSize, false);
 
     try {
-      assertEquals("Should have a core pool of size: " + initialCorePoolSize, initialCorePoolSize,
+      assertEquals("Setting core pool size gave unexpected results.", initialCorePoolSize,
         service.getCorePoolSize());
 
       final int slowChorePeriod = 100;
@@ -568,7 +576,7 @@ public class TestChoreService {
     ChoreService service = new ChoreService("testNumberOfChoresMissingStartTime");
 
     final int period = 100;
-    final int sleepTime = 5 * period;
+    final int sleepTime = 20 * period;
 
     try {
       // Slow chores sleep for a length of time LONGER than their period. Thus, SlowChores
@@ -703,7 +711,7 @@ public class TestChoreService {
     Stoppable stopperForGroup1 = new SampleStopper();
     Stoppable stopperForGroup2 = new SampleStopper();
     final int period = 100;
-    final int delta = 10;
+    final int delta = period/10;
 
     try {
       ScheduledChore chore1_group1 = new DoNothingChore("c1g1", stopperForGroup1, period);
@@ -832,5 +840,22 @@ public class TestChoreService {
     assertFalse(failChore2.isScheduled());
     assertFalse(service.scheduleChore(failChore3));
     assertFalse(failChore3.isScheduled());
+  }
+
+  /**
+   * for HBASE-25014
+   */
+  @Test(timeout = 10000)
+  public void testInitialDelay() {
+    ChoreService service = new ChoreService(name.getMethodName());
+    SampleStopper stopper = new SampleStopper();
+    service.scheduleChore(new ScheduledChore("chore", stopper, 1000, 2000) {
+      @Override protected void chore() {
+        stopper.stop("test");
+      }
+    });
+    while (!stopper.isStopped()) {
+      Threads.sleep(1000);
+    }
   }
 }

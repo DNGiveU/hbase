@@ -29,7 +29,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import org.apache.hadoop.hbase.client.ClientScanner;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.RegionInfo;
@@ -43,7 +42,7 @@ import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.FirstKeyOnlyFilter;
 import org.apache.hadoop.hbase.filter.FirstKeyValueMatchingQualifiersFilter;
 import org.apache.hadoop.hbase.filter.RandomRowFilter;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ClassSize;
 import org.apache.hadoop.hbase.util.Pair;
@@ -67,7 +66,7 @@ import org.slf4j.LoggerFactory;
  * Unless the flag {@link Scan#setAllowPartialResults(boolean)} has been set to true, the caller of
  * {@link ResultScanner#next()} should never see partial results.
  */
-@Category(MediumTests.class)
+@Category(LargeTests.class)
 public class TestPartialResultsFromClientSide {
 
   @ClassRule
@@ -118,7 +117,7 @@ public class TestPartialResultsFromClientSide {
   public static void setUpBeforeClass() throws Exception {
     TEST_UTIL.getConfiguration().setLong(HConstants.HBASE_CLIENT_SCANNER_TIMEOUT_PERIOD, timeout);
     TEST_UTIL.startMiniCluster(MINICLUSTER_SIZE);
-    TEST_UTIL.getAdmin().setBalancerRunning(false, true);
+    TEST_UTIL.getAdmin().balancerSwitch(false, true);
     TABLE = createTestTable(TABLE_NAME, ROWS, FAMILIES, QUALIFIERS, VALUE);
   }
 
@@ -149,7 +148,7 @@ public class TestPartialResultsFromClientSide {
 
   public void testExpectedValuesOfPartialResults(boolean reversed) throws Exception {
     Scan partialScan = new Scan();
-    partialScan.setMaxVersions();
+    partialScan.readAllVersions();
     // Max result size of 1 ensures that each RPC request will return a single cell. The scanner
     // will need to reconstruct the results into a complete result before returning to the caller
     partialScan.setMaxResultSize(1);
@@ -391,8 +390,7 @@ public class TestPartialResultsFromClientSide {
       // Estimate the cell heap size. One difference is that on server side, the KV Heap size is
       // estimated differently in case the cell is backed up by MSLAB byte[] (no overhead for
       // backing array). Thus below calculation is a bit brittle.
-      CELL_HEAP_SIZE = PrivateCellUtil.estimatedSizeOfCell(result.rawCells()[0])
-          - (ClassSize.ARRAY+3);
+      CELL_HEAP_SIZE = result.rawCells()[0].heapSize() - (ClassSize.ARRAY + 3);
       if (LOG.isInfoEnabled()) LOG.info("Cell heap size: " + CELL_HEAP_SIZE);
       scanner.close();
     }
@@ -570,7 +568,6 @@ public class TestPartialResultsFromClientSide {
   /**
    * @param resultSizeRowLimit The row limit that will be enforced through maxResultSize
    * @param cachingRowLimit The row limit that will be enforced through caching
-   * @throws Exception
    */
   public void testPartialResultsAndCaching(int resultSizeRowLimit, int cachingRowLimit)
       throws Exception {
@@ -586,19 +583,16 @@ public class TestPartialResultsFromClientSide {
     scan.setMaxResultSize(maxResultSize);
     scan.setCaching(cachingRowLimit);
 
-    ResultScanner scanner = TABLE.getScanner(scan);
-    ClientScanner clientScanner = (ClientScanner) scanner;
-    Result r = null;
-
-    // Approximate the number of rows we expect will fit into the specified max rsult size. If this
-    // approximation is less than caching, then we expect that the max result size limit will be
-    // hit before the caching limit and thus partial results may be seen
-    boolean expectToSeePartialResults = resultSizeRowLimit < cachingRowLimit;
-    while ((r = clientScanner.next()) != null) {
-      assertTrue(!r.mayHaveMoreCellsInRow() || expectToSeePartialResults);
+    try (ResultScanner scanner = TABLE.getScanner(scan)) {
+      Result r = null;
+      // Approximate the number of rows we expect will fit into the specified max rsult size. If
+      // this approximation is less than caching, then we expect that the max result size limit will
+      // be hit before the caching limit and thus partial results may be seen
+      boolean expectToSeePartialResults = resultSizeRowLimit < cachingRowLimit;
+      while ((r = scanner.next()) != null) {
+        assertTrue(!r.mayHaveMoreCellsInRow() || expectToSeePartialResults);
+      }
     }
-
-    scanner.close();
   }
 
   /**
@@ -829,8 +823,7 @@ public class TestPartialResultsFromClientSide {
     assertEquals(1, regions.size());
     RegionInfo regionInfo = regions.get(0).getFirst();
     ServerName name = TEST_UTIL.getHBaseCluster().getRegionServer(index).getServerName();
-    TEST_UTIL.getAdmin().move(regionInfo.getEncodedNameAsBytes(),
-        Bytes.toBytes(name.getServerName()));
+    TEST_UTIL.getAdmin().move(regionInfo.getEncodedNameAsBytes(), name);
   }
 
   private void assertCell(Cell cell, byte[] row, byte[] cf, byte[] cq) {

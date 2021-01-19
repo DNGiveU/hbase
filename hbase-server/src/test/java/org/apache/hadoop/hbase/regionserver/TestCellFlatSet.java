@@ -81,14 +81,16 @@ public class TestCellFlatSet {
     long globalMemStoreLimit = (long) (ManagementFactory.getMemoryMXBean().getHeapMemoryUsage()
         .getMax() * MemorySizeUtil.getGlobalMemStoreHeapPercent(CONF, false));
     if (chunkType.equals("NORMAL_CHUNKS")) {
-      chunkCreator = ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT, false,
-          globalMemStoreLimit, 0.2f, MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT, null);
+      chunkCreator = ChunkCreator.initialize(MemStoreLAB.CHUNK_SIZE_DEFAULT, false,
+        globalMemStoreLimit, 0.2f, MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT,
+        null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
       assertNotNull(chunkCreator);
       smallChunks = false;
     } else {
       // chunkCreator with smaller chunk size, so only 3 cell-representations can accommodate a chunk
       chunkCreator = ChunkCreator.initialize(SMALL_CHUNK_SIZE, false,
-          globalMemStoreLimit, 0.2f, MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT, null);
+        globalMemStoreLimit, 0.2f, MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT,
+        null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
       assertNotNull(chunkCreator);
       smallChunks = true;
     }
@@ -295,7 +297,7 @@ public class TestCellFlatSet {
 
     for (Cell kv: cellArray) {
       // do we have enough space to write the cell data on the data chunk?
-      if (dataOffset + KeyValueUtil.length(kv) > chunkCreator.getChunkSize()) {
+      if (dataOffset + kv.getSerializedSize() > chunkCreator.getChunkSize()) {
         // allocate more data chunks if needed
         dataChunk = chunkCreator.getChunk(CompactingMemStore.IndexType.CHUNK_MAP);
         dataBuffer = dataChunk.getData();
@@ -314,7 +316,7 @@ public class TestCellFlatSet {
       }
       idxOffset = ByteBufferUtils.putInt(idxBuffer, idxOffset, dataChunk.getId()); // write data chunk id
       idxOffset = ByteBufferUtils.putInt(idxBuffer, idxOffset, dataStartOfset);          // offset
-      idxOffset = ByteBufferUtils.putInt(idxBuffer, idxOffset, KeyValueUtil.length(kv)); // length
+      idxOffset = ByteBufferUtils.putInt(idxBuffer, idxOffset, kv.getSerializedSize()); // length
       idxOffset = ByteBufferUtils.putLong(idxBuffer, idxOffset, kv.getSequenceId());     // seqId
     }
 
@@ -357,7 +359,7 @@ public class TestCellFlatSet {
       // write data chunk id
       idxOffset = ByteBufferUtils.putInt(idxBuffer, idxOffset, dataJumboChunk.getId());
       idxOffset = ByteBufferUtils.putInt(idxBuffer, idxOffset, dataStartOfset);          // offset
-      idxOffset = ByteBufferUtils.putInt(idxBuffer, idxOffset, KeyValueUtil.length(kv)); // length
+      idxOffset = ByteBufferUtils.putInt(idxBuffer, idxOffset, kv.getSerializedSize()); // length
       idxOffset = ByteBufferUtils.putLong(idxBuffer, idxOffset, kv.getSequenceId());     // seqId
 
       // Jumbo chunks are working only with one cell per chunk, thus always allocate a new jumbo

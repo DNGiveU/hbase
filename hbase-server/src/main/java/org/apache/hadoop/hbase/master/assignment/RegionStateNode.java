@@ -36,8 +36,6 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
-
 /**
  * Current Region State. Most fields are synchronized with meta region, i.e, we will update meta
  * immediately after we modify this RegionStateNode, and usually under the lock. The only exception
@@ -77,7 +75,6 @@ public class RegionStateNode implements Comparable<RegionStateNode> {
     }
   }
 
-  @VisibleForTesting
   final Lock lock = new ReentrantLock();
   private final RegionInfo regionInfo;
   private final ProcedureEvent<?> event;
@@ -99,7 +96,7 @@ public class RegionStateNode implements Comparable<RegionStateNode> {
 
   /**
    * Updated whenever a call to {@link #setRegionLocation(ServerName)} or
-   * {@link #setState(State, State...)}.
+   * {@link #setState(RegionState.State, RegionState.State...)}.
    */
   private volatile long lastUpdate = 0;
 
@@ -146,15 +143,17 @@ public class RegionStateNode implements Comparable<RegionStateNode> {
     }
   }
 
-  public boolean isInState(final State... expected) {
-    if (expected != null && expected.length > 0) {
-      boolean expectedState = false;
-      for (int i = 0; i < expected.length; ++i) {
-        expectedState |= (getState() == expected[i]);
-      }
-      return expectedState;
+  /**
+   * Notice that, we will return true if {@code expected} is empty.
+   * <p/>
+   * This is a bit strange but we need this logic, for example, we can change the state to OPENING
+   * from any state, as in SCP we will not change the state to CLOSED before opening the region.
+   */
+  public boolean isInState(State... expected) {
+    if (expected.length == 0) {
+      return true;
     }
-    return true;
+    return getState().matches(expected);
   }
 
   public boolean isStuck() {
@@ -167,7 +166,11 @@ public class RegionStateNode implements Comparable<RegionStateNode> {
 
   public long getLastUpdate() {
     TransitRegionStateProcedure proc = this.procedure;
-    return proc != null ? proc.getLastUpdate() : lastUpdate;
+    if (proc != null) {
+      long lastUpdate = proc.getLastUpdate();
+      return lastUpdate != 0 ? lastUpdate : proc.getSubmittedTime();
+    }
+    return lastUpdate;
   }
 
   public void setLastHost(final ServerName serverName) {
@@ -188,10 +191,11 @@ public class RegionStateNode implements Comparable<RegionStateNode> {
     return lastRegionLocation;
   }
 
-  public void setProcedure(TransitRegionStateProcedure proc) {
+  public TransitRegionStateProcedure setProcedure(TransitRegionStateProcedure proc) {
     assert this.procedure == null;
     this.procedure = proc;
     ritMap.put(regionInfo, this);
+    return proc;
   }
 
   public void unsetProcedure(TransitRegionStateProcedure proc) {
@@ -276,7 +280,7 @@ public class RegionStateNode implements Comparable<RegionStateNode> {
 
   public String toShortString() {
     // rit= is the current Region-In-Transition State -- see State enum.
-    return String.format("rit=%s, location=%s", getState(), getRegionLocation());
+    return String.format("state=%s, location=%s", getState(), getRegionLocation());
   }
 
   public String toDescriptiveString() {
@@ -288,7 +292,7 @@ public class RegionStateNode implements Comparable<RegionStateNode> {
     RegionInfo ri = getRegionInfo();
     State s = state;
     if (s != State.OPEN) {
-      throw new DoNotRetryRegionException(ri.getEncodedName() + " is no OPEN; state=" + s);
+      throw new DoNotRetryRegionException(ri.getEncodedName() + " is not OPEN; state=" + s);
     }
     if (ri.isSplitParent()) {
       throw new DoNotRetryRegionException(

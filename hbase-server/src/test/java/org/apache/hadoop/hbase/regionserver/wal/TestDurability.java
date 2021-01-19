@@ -40,11 +40,11 @@ import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.regionserver.ChunkCreator;
 import org.apache.hadoop.hbase.regionserver.HRegion;
-import org.apache.hadoop.hbase.regionserver.MemStoreLABImpl;
+import org.apache.hadoop.hbase.regionserver.MemStoreLAB;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
 import org.apache.hadoop.hbase.wal.WAL;
 import org.apache.hadoop.hbase.wal.WALFactory;
@@ -103,7 +103,7 @@ public class TestDurability {
     CLUSTER = TEST_UTIL.getDFSCluster();
     FS = CLUSTER.getFileSystem();
     DIR = TEST_UTIL.getDataTestDirOnTestFS("TestDurability");
-    FSUtils.setRootDir(CONF, DIR);
+    CommonFSUtils.setRootDir(CONF, DIR);
   }
 
   @AfterClass
@@ -208,14 +208,13 @@ public class TestDurability {
     assertEquals(1, Bytes.toLong(res.getValue(FAMILY, col1)));
     verifyWALCount(wals, wal, 2);
 
-    // col1: amount = 0, 0 write back to WAL
+    // col1: amount = 0, 1 write back to WAL
     inc1 = new Increment(row1);
     inc1.addColumn(FAMILY, col1, 0);
     res = region.increment(inc1);
     assertEquals(1, res.size());
     assertEquals(1, Bytes.toLong(res.getValue(FAMILY, col1)));
-    verifyWALCount(wals, wal, 2);
-
+    verifyWALCount(wals, wal, 3);
     // col1: amount = 0, col2: amount = 0, col3: amount = 0
     // 1 write back to WAL
     inc1 = new Increment(row1);
@@ -227,7 +226,7 @@ public class TestDurability {
     assertEquals(1, Bytes.toLong(res.getValue(FAMILY, col1)));
     assertEquals(0, Bytes.toLong(res.getValue(FAMILY, col2)));
     assertEquals(0, Bytes.toLong(res.getValue(FAMILY, col3)));
-    verifyWALCount(wals, wal, 3);
+    verifyWALCount(wals, wal, 4);
 
     // col1: amount = 5, col2: amount = 4, col3: amount = 3
     // 1 write back to WAL
@@ -240,7 +239,7 @@ public class TestDurability {
     assertEquals(6, Bytes.toLong(res.getValue(FAMILY, col1)));
     assertEquals(4, Bytes.toLong(res.getValue(FAMILY, col2)));
     assertEquals(3, Bytes.toLong(res.getValue(FAMILY, col3)));
-    verifyWALCount(wals, wal, 4);
+    verifyWALCount(wals, wal, 5);
   }
 
   /**
@@ -299,7 +298,8 @@ public class TestDurability {
         throw new IOException("Failed delete of " + path);
       }
     }
-    ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT, false, 0, 0, 0, null);
+    ChunkCreator.initialize(MemStoreLAB.CHUNK_SIZE_DEFAULT, false, 0, 0,
+      0, null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
     return HRegion.createHRegion(info, path, CONF, htd, wals.getWAL(info));
   }
 
@@ -311,7 +311,8 @@ public class TestDurability {
         throw new IOException("Failed delete of " + path);
       }
     }
-    ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT, false, 0, 0, 0, null);
+    ChunkCreator.initialize(MemStoreLAB.CHUNK_SIZE_DEFAULT, false, 0, 0,
+      0, null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
     return HRegion.createHRegion(info, path, CONF, td, wal);
   }
 }

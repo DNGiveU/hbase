@@ -31,7 +31,6 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -60,8 +59,9 @@ public class TestMemstoreLABWithoutPool {
     long globalMemStoreLimit = (long) (ManagementFactory.getMemoryMXBean().getHeapMemoryUsage()
         .getMax() * 0.8);
     // disable pool
-    ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT + Bytes.SIZEOF_LONG, false, globalMemStoreLimit,
-      0.0f, MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT, null);
+    ChunkCreator.initialize(MemStoreLABImpl.CHUNK_SIZE_DEFAULT + Bytes.SIZEOF_LONG,
+      false, globalMemStoreLimit, 0.0f, MemStoreLAB.POOL_INITIAL_SIZE_DEFAULT,
+      null, MemStoreLAB.INDEX_CHUNK_SIZE_PERCENTAGE_DEFAULT);
   }
 
   /**
@@ -80,7 +80,7 @@ public class TestMemstoreLABWithoutPool {
     for (int i = 0; i < 100000; i++) {
       int valSize = rand.nextInt(1000);
       KeyValue kv = new KeyValue(rk, cf, q, new byte[valSize]);
-      int size = KeyValueUtil.length(kv);
+      int size = kv.getSerializedSize();
       ByteBufferKeyValue newKv = (ByteBufferKeyValue) mslab.copyCellInto(kv);
       if (newKv.getBuffer() != lastBuffer) {
         // since we add the chunkID at the 0th offset of the chunk and the

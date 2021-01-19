@@ -17,10 +17,11 @@
  */
 package org.apache.hadoop.hbase.regionserver;
 
+import static org.apache.hadoop.hbase.HConstants.HBASE_SPLIT_WAL_MAX_SPLITTER;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.not;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -41,7 +42,7 @@ import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.SplitLogCounters;
 import org.apache.hadoop.hbase.SplitLogTask;
 import org.apache.hadoop.hbase.Waiter;
-import org.apache.hadoop.hbase.client.ClusterConnection;
+import org.apache.hadoop.hbase.client.AsyncClusterConnection;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.coordination.ZkCoordinatedStateManager;
 import org.apache.hadoop.hbase.executor.ExecutorService;
@@ -130,18 +131,12 @@ public class TestSplitLogWorker {
     }
 
     @Override
-    public ClusterConnection getConnection() {
+    public Connection getConnection() {
       return null;
     }
 
     @Override
     public ChoreService getChoreService() {
-      return null;
-    }
-
-    @Override
-    public ClusterConnection getClusterConnection() {
-      // TODO Auto-generated method stub
       return null;
     }
 
@@ -157,6 +152,11 @@ public class TestSplitLogWorker {
 
     @Override
     public Connection createConnection(Configuration conf) throws IOException {
+      return null;
+    }
+
+    @Override
+    public AsyncClusterConnection getAsyncClusterConnection() {
       return null;
     }
   }
@@ -449,7 +449,7 @@ public class TestSplitLogWorker {
     final ServerName RS = ServerName.valueOf("rs,1,1");
     final int maxTasks = 3;
     Configuration testConf = HBaseConfiguration.create(TEST_UTIL.getConfiguration());
-    testConf.setInt("hbase.regionserver.wal.max.splitters", maxTasks);
+    testConf.setInt(HBASE_SPLIT_WAL_MAX_SPLITTER, maxTasks);
     RegionServerServices mockedRS = getRegionServer(RS);
     for (int i = 0; i < maxTasks; i++) {
       zkw.getRecoverableZooKeeper().create(ZKSplitLog.getEncodedNodeName(zkw, TATAS + i),
@@ -466,53 +466,6 @@ public class TestSplitLogWorker {
         SplitLogTask slt = SplitLogTask.parseFrom(bytes);
         assertTrue(slt.isOwned(RS));
       }
-    } finally {
-      stopSplitLogWorker(slw);
-    }
-  }
-
-  /**
-   * The test checks SplitLogWorker should not spawn more splitters than expected num of tasks per
-   * RS
-   * @throws Exception
-   */
-  @Test
-  public void testAcquireMultiTasksByAvgTasksPerRS() throws Exception {
-    LOG.info("testAcquireMultiTasks");
-    SplitLogCounters.resetCounters();
-    final String TATAS = "tatas";
-    final ServerName RS = ServerName.valueOf("rs,1,1");
-    final ServerName RS2 = ServerName.valueOf("rs,1,2");
-    final int maxTasks = 3;
-    Configuration testConf = HBaseConfiguration.create(TEST_UTIL.getConfiguration());
-    testConf.setInt("hbase.regionserver.wal.max.splitters", maxTasks);
-    RegionServerServices mockedRS = getRegionServer(RS);
-
-    // create two RS nodes
-    String rsPath = ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode, RS.getServerName());
-    zkw.getRecoverableZooKeeper().create(rsPath, null, Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
-    rsPath = ZNodePaths.joinZNode(zkw.getZNodePaths().rsZNode, RS2.getServerName());
-    zkw.getRecoverableZooKeeper().create(rsPath, null, Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
-
-    for (int i = 0; i < maxTasks; i++) {
-      zkw.getRecoverableZooKeeper().create(ZKSplitLog.getEncodedNodeName(zkw, TATAS + i),
-        new SplitLogTask.Unassigned(ServerName.valueOf("mgr,1,1")).toByteArray(),
-          Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-    }
-
-    SplitLogWorker slw = new SplitLogWorker(ds, testConf, mockedRS, neverEndingTask);
-    slw.start();
-    try {
-      int acquiredTasks = 0;
-      waitForCounter(SplitLogCounters.tot_wkr_task_acquired, 0, 2, WAIT_TIME);
-      for (int i = 0; i < maxTasks; i++) {
-        byte[] bytes = ZKUtil.getData(zkw, ZKSplitLog.getEncodedNodeName(zkw, TATAS + i));
-        SplitLogTask slt = SplitLogTask.parseFrom(bytes);
-        if (slt.isOwned(RS)) {
-          acquiredTasks++;
-        }
-      }
-      assertEquals(2, acquiredTasks);
     } finally {
       stopSplitLogWorker(slw);
     }

@@ -23,7 +23,6 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.hbase.BaseConfigurable;
@@ -55,6 +54,14 @@ public class UserProvider extends BaseConfigurable {
   private LoadingCache<String, String[]> groupCache = null;
 
   static Groups groups = Groups.getUserToGroupsMappingService();
+
+  public static Groups getGroups() {
+    return groups;
+  }
+
+  public static void setGroups(Groups groups) {
+    UserProvider.groups = groups;
+  }
 
   @Override
   public void setConf(final Configuration conf) {

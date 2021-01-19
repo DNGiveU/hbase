@@ -31,6 +31,7 @@ import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.testclassification.FilterTests;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.Assert;
 import org.junit.ClassRule;
 import org.junit.Rule;
@@ -84,7 +85,7 @@ public class TestScanRowPrefix extends FilterTestingCluster {
     for (byte[] rowId: rowIds) {
       Put p = new Put(rowId);
       // Use the rowId as the column qualifier
-      p.addColumn("F".getBytes(), rowId, "Dummy value".getBytes());
+      p.addColumn(Bytes.toBytes("F"), rowId, Bytes.toBytes("Dummy value"));
       table.put(p);
     }
 
@@ -203,6 +204,45 @@ public class TestScanRowPrefix extends FilterTestingCluster {
 
     scan.setRowPrefixFilter(null);
     verifyScanResult(table, scan, expected0, "Scan after prefix reset failed");
+  }
+
+  @Test
+  public void testRowPrefixFilterAndStartRow() throws IOException {
+    final TableName tableName = TableName.valueOf(name.getMethodName());
+    createTable(tableName,"F");
+    Table table = openTable(tableName);
+
+    final byte[][] rowkeys = {Bytes.toBytes("111"), Bytes.toBytes("112")};
+    final byte[] prefixFilter = Bytes.toBytes("11");
+    for (byte[] rowkey: rowkeys) {
+      Put p = new Put(rowkey);
+      p.addColumn(Bytes.toBytes("F"), Bytes.toBytes("f"), Bytes.toBytes("test value"));
+      table.put(p);
+    }
+
+    List<byte[]> expected0 = new ArrayList<>();
+    expected0.add(rowkeys[0]);
+    expected0.add(rowkeys[1]);
+
+    List<byte[]> expected1 = new ArrayList<>();
+    expected1.add(rowkeys[1]);
+
+    // ========
+    // First scan
+    // Set startRow before setRowPrefixFilter
+    Scan scan = new Scan();
+    scan.withStartRow(rowkeys[1]);
+    scan.setRowPrefixFilter(prefixFilter);
+    verifyScanResult(table, scan, expected0, "Set startRow before setRowPrefixFilter unexpected");
+
+    // ========
+    // Second scan
+    // Set startRow after setRowPrefixFilter
+    // The result is different from first scan
+    scan = new Scan();
+    scan.setRowPrefixFilter(prefixFilter);
+    scan.withStartRow(rowkeys[1]);
+    verifyScanResult(table, scan, expected1, "Set startRow after setRowPrefixFilter unexpected");
   }
 
   private void verifyScanResult(Table table, Scan scan, List<byte[]> expectedKeys, String message) {

@@ -39,10 +39,10 @@
 # export HBASE_OFFHEAPSIZE=1G
 
 # Extra Java runtime options.
-# Below are what we set by default.  May only work with SUN JVM.
-# For more on why as well as other possible settings,
-# see http://hbase.apache.org/book.html#performance
-export HBASE_OPTS="$HBASE_OPTS -XX:+UseConcMarkSweepGC"
+# Default settings are applied according to the detected JVM version. Override these default
+# settings by specifying a value here. For more details on possible settings,
+# see http://hbase.apache.org/book.html#_jvm_tuning
+# export HBASE_OPTS
 
 # Uncomment one of the below three options to enable java garbage collection logging for the server-side processes.
 
@@ -107,6 +107,7 @@ export HBASE_OPTS="$HBASE_OPTS -XX:+UseConcMarkSweepGC"
 # export HBASE_REGIONSERVER_OPTS="$HBASE_REGIONSERVER_OPTS -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=8071"
 # export HBASE_THRIFT_OPTS="$HBASE_THRIFT_OPTS -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=8072"
 # export HBASE_ZOOKEEPER_OPTS="$HBASE_ZOOKEEPER_OPTS -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=8073"
+# export HBASE_REST_OPTS="$HBASE_REST_OPTS -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=8074"
 
 # A string representing this instance of hbase. $USER by default.
 # export HBASE_IDENT_STRING=$USER
@@ -137,3 +138,7 @@ export HBASE_OPTS="$HBASE_OPTS -XX:+UseConcMarkSweepGC"
 # Tell HBase whether it should include Hadoop's lib when start up,
 # the default value is false,means that includes Hadoop's lib.
 # export HBASE_DISABLE_HADOOP_CLASSPATH_LOOKUP="true"
+
+# Override text processing tools for use by these launch scripts.
+# export GREP="${GREP-grep}"
+# export SED="${SED-sed}"

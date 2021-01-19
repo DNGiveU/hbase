@@ -30,7 +30,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.math3.stat.descriptive.DescriptiveStatistics;
-import org.apache.hadoop.hbase.ClusterStatus;
+import org.apache.hadoop.hbase.ClusterMetrics;
 import org.apache.hadoop.hbase.IntegrationTestingUtility;
 import org.apache.hadoop.hbase.InvalidFamilyOperationException;
 import org.apache.hadoop.hbase.NamespaceExistException;
@@ -59,7 +59,6 @@ import org.apache.hadoop.hbase.filter.KeyOnlyFilter;
 import org.apache.hadoop.hbase.ipc.FatalConnectionException;
 import org.apache.hadoop.hbase.regionserver.NoSuchColumnFamilyException;
 import org.apache.hadoop.hbase.security.AccessDeniedException;
-import org.apache.hbase.thirdparty.com.google.common.base.MoreObjects;
 import org.apache.hadoop.hbase.testclassification.IntegrationTests;
 import org.apache.hadoop.hbase.trace.TraceUtil;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -73,6 +72,8 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hbase.thirdparty.com.google.common.base.MoreObjects;
 
 /**
  * Integration test that should benchmark how fast HBase can recover from failures. This test starts
@@ -232,8 +233,7 @@ public class IntegrationTestMTTR {
     }
 
     // Create the table.  If this fails then fail everything.
-    TableDescriptor tableDescriptor = util.getAdmin().getDescriptor(tableName);
-    TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(tableDescriptor);
+    TableDescriptorBuilder builder = TableDescriptorBuilder.newBuilder(tableName);
 
     // Make the max file size huge so that splits don't happen during the test.
     builder.setMaxFileSize(Long.MAX_VALUE);
@@ -541,7 +541,7 @@ public class IntegrationTestMTTR {
         s.setBatch(2);
         s.addFamily(FAMILY);
         s.setFilter(new KeyOnlyFilter());
-        s.setMaxVersions(1);
+        s.readVersions(1);
 
         rs = table.getScanner(s);
         Result result = rs.next();
@@ -572,7 +572,7 @@ public class IntegrationTestMTTR {
       Admin admin = null;
       try {
         admin = util.getAdmin();
-        ClusterStatus status = admin.getClusterStatus();
+        ClusterMetrics status = admin.getClusterMetrics();
         return status != null;
       } finally {
         if (admin != null) {

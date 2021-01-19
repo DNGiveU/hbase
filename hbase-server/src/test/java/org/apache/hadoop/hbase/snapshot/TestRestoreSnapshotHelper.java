@@ -31,12 +31,14 @@ import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.errorhandling.ForeignExceptionDispatcher;
 import org.apache.hadoop.hbase.io.HFileLink;
 import org.apache.hadoop.hbase.mob.MobUtils;
 import org.apache.hadoop.hbase.monitoring.MonitoredTask;
+import org.apache.hadoop.hbase.regionserver.HRegion;
 import org.apache.hadoop.hbase.regionserver.StoreFileInfo;
 import org.apache.hadoop.hbase.snapshot.SnapshotTestingUtils.SnapshotMock;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
@@ -44,7 +46,7 @@ import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.FSTableDescriptors;
-import org.apache.hadoop.hbase.util.FSUtils;
+import org.apache.hadoop.hbase.wal.WALSplitUtil;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Assert;
@@ -99,7 +101,7 @@ public class TestRestoreSnapshotHelper {
     fs = TEST_UTIL.getTestFileSystem();
     conf = TEST_UTIL.getConfiguration();
     setupConf(conf);
-    FSUtils.setRootDir(conf, rootDir);
+    CommonFSUtils.setRootDir(conf, rootDir);
   }
 
   @After
@@ -124,7 +126,7 @@ public class TestRestoreSnapshotHelper {
   @Test
   public void testNoHFileLinkInRootDir() throws IOException {
     rootDir = TEST_UTIL.getDefaultRootDirPath();
-    FSUtils.setRootDir(conf, rootDir);
+    CommonFSUtils.setRootDir(conf, rootDir);
     fs = rootDir.getFileSystem(conf);
 
     TableName tableName = TableName.valueOf("testNoHFileLinkInRootDir");
@@ -134,6 +136,45 @@ public class TestRestoreSnapshotHelper {
     Path restoreDir = new Path("/hbase/.tmp-restore");
     RestoreSnapshotHelper.copySnapshotForScanner(conf, fs, rootDir, restoreDir, snapshotName);
     checkNoHFileLinkInTableDir(tableName);
+  }
+
+  @Test
+  public void testSkipReplayAndUpdateSeqId() throws Exception {
+    rootDir = TEST_UTIL.getDefaultRootDirPath();
+    CommonFSUtils.setRootDir(conf, rootDir);
+    TableName tableName = TableName.valueOf("testSkipReplayAndUpdateSeqId");
+    String snapshotName = "testSkipReplayAndUpdateSeqId";
+    createTableAndSnapshot(tableName, snapshotName);
+    // put some data in the table
+    Table table = TEST_UTIL.getConnection().getTable(tableName);
+    TEST_UTIL.loadTable(table, Bytes.toBytes("A"));
+
+    Configuration conf = TEST_UTIL.getConfiguration();
+    Path rootDir = CommonFSUtils.getRootDir(conf);
+    Path restoreDir = new Path("/hbase/.tmp-restore/testScannerWithRestoreScanner2");
+    // restore snapshot.
+    final RestoreSnapshotHelper.RestoreMetaChanges meta =
+      RestoreSnapshotHelper.copySnapshotForScanner(conf, fs, rootDir, restoreDir, snapshotName);
+    TableDescriptor htd = meta.getTableDescriptor();
+    final List<RegionInfo> restoredRegions = meta.getRegionsToAdd();
+    for (RegionInfo restoredRegion : restoredRegions) {
+      // open restored region
+      HRegion region = HRegion.newHRegion(CommonFSUtils.getTableDir(restoreDir, tableName), null,
+        fs, conf, restoredRegion, htd, null);
+      // set restore flag
+      region.setRestoredRegion(true);
+      region.initialize();
+      Path recoveredEdit =
+        CommonFSUtils.getWALRegionDir(conf, tableName, region.getRegionInfo().getEncodedName());
+      long maxSeqId = WALSplitUtil.getMaxRegionSequenceId(fs, recoveredEdit);
+
+      // open restored region without set restored flag
+      HRegion region2 = HRegion.newHRegion(CommonFSUtils.getTableDir(restoreDir, tableName), null,
+        fs, conf, restoredRegion, htd, null);
+      region2.initialize();
+      long maxSeqId2 = WALSplitUtil.getMaxRegionSequenceId(fs, recoveredEdit);
+      Assert.assertTrue(maxSeqId2 > maxSeqId);
+    }
   }
 
   protected void createTableAndSnapshot(TableName tableName, String snapshotName)
@@ -189,7 +230,7 @@ public class TestRestoreSnapshotHelper {
         .setName("cloneSnapshot")
         .setTable("testtb-clone")
         .build();
-    Path cloneDir = FSUtils.getTableDir(rootDir, htdClone.getTableName());
+    Path cloneDir = CommonFSUtils.getTableDir(rootDir, htdClone.getTableName());
     TableDescriptor htdClone2 = snapshotMock.createHtd("testtb-clone2");
     testRestore(cloneDir, cloneDesc, htdClone2);
     verifyRestore(rootDir, htd, htdClone2);
@@ -198,7 +239,7 @@ public class TestRestoreSnapshotHelper {
   private void verifyRestore(final Path rootDir, final TableDescriptor sourceHtd,
       final TableDescriptor htdClone) throws IOException {
     List<String> files = SnapshotTestingUtils.listHFileNames(fs,
-      FSUtils.getTableDir(rootDir, htdClone.getTableName()));
+      CommonFSUtils.getTableDir(rootDir, htdClone.getTableName()));
     assertEquals(12, files.size());
     for (int i = 0; i < files.size(); i += 2) {
       String linkFile = files.get(i);
@@ -222,14 +263,14 @@ public class TestRestoreSnapshotHelper {
   private void testRestore(final Path snapshotDir, final SnapshotDescription sd,
       final TableDescriptor htdClone) throws IOException {
     LOG.debug("pre-restore table=" + htdClone.getTableName() + " snapshot=" + snapshotDir);
-    FSUtils.logFileSystemState(fs, rootDir, LOG);
+    CommonFSUtils.logFileSystemState(fs, rootDir, LOG);
 
     new FSTableDescriptors(conf).createTableDescriptor(htdClone);
     RestoreSnapshotHelper helper = getRestoreHelper(rootDir, snapshotDir, sd, htdClone);
     helper.restoreHdfsRegions();
 
     LOG.debug("post-restore table=" + htdClone.getTableName() + " snapshot=" + snapshotDir);
-    FSUtils.logFileSystemState(fs, rootDir, LOG);
+    CommonFSUtils.logFileSystemState(fs, rootDir, LOG);
   }
 
   /**

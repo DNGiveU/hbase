@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.hbase.regionserver.wal;
 
+import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
+
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -48,6 +50,11 @@ public final class CombinedAsyncWriter implements AsyncWriter {
   }
 
   @Override
+  public long getSyncedLength() {
+    return writers.get(0).getSyncedLength();
+  }
+
+  @Override
   public void close() throws IOException {
     Exception error = null;
     for (AsyncWriter writer : writers) {
@@ -62,7 +69,7 @@ public final class CombinedAsyncWriter implements AsyncWriter {
     }
     if (error != null) {
       throw new IOException("Failed to close at least one writer, please see the warn log above. " +
-        "The cause is the first exception occured", error);
+        "The cause is the first exception occurred", error);
     }
   }
 
@@ -72,10 +79,10 @@ public final class CombinedAsyncWriter implements AsyncWriter {
   }
 
   @Override
-  public CompletableFuture<Long> sync() {
+  public CompletableFuture<Long> sync(boolean forceSync) {
     CompletableFuture<Long> future = new CompletableFuture<>();
     AtomicInteger remaining = new AtomicInteger(writers.size());
-    writers.forEach(w -> w.sync().whenComplete((length, error) -> {
+    writers.forEach(w -> addListener(w.sync(forceSync), (length, error) -> {
       if (error != null) {
         future.completeExceptionally(error);
         return;

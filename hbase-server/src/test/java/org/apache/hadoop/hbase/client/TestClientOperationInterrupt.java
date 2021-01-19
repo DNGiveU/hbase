@@ -36,7 +36,7 @@ import org.apache.hadoop.hbase.coprocessor.RegionCoprocessor;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.coprocessor.RegionObserver;
 import org.apache.hadoop.hbase.testclassification.ClientTests;
-import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hbase.testclassification.LargeTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Threads;
 import org.junit.AfterClass;
@@ -48,7 +48,7 @@ import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-@Category({MediumTests.class, ClientTests.class})
+@Category({LargeTests.class, ClientTests.class})
 public class TestClientOperationInterrupt {
 
   @ClassRule
@@ -138,8 +138,12 @@ public class TestClientOperationInterrupt {
       threads.add(t);
       t.start();
     }
+    int expectedNoExNum = nbThread / 2;
 
     for (int i = 0; i < nbThread / 2; i++) {
+      if (threads.get(i).getState().equals(Thread.State.TERMINATED)) {
+        expectedNoExNum--;
+      }
       threads.get(i).interrupt();
     }
 
@@ -156,9 +160,8 @@ public class TestClientOperationInterrupt {
     }
 
     Assert.assertFalse(Thread.currentThread().isInterrupted());
-
     Assert.assertTrue(" noEx: " + noEx.get() + ", badEx=" + badEx.get() + ", noInt=" + noInt.get(),
-        noEx.get() == nbThread / 2 && badEx.get() == 0);
+        noEx.get() == expectedNoExNum && badEx.get() == 0);
 
     // The problem here is that we need the server to free its handlers to handle all operations
     while (done.get() != nbThread){

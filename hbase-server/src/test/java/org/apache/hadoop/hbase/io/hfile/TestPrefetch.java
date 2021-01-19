@@ -17,30 +17,33 @@
  */
 package org.apache.hadoop.hbase.io.hfile;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.util.Random;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.CellComparatorImpl;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.fs.HFileSystem;
+import org.apache.hadoop.hbase.io.ByteBuffAllocator;
 import org.apache.hadoop.hbase.regionserver.StoreFileWriter;
 import org.apache.hadoop.hbase.testclassification.IOTests;
-import org.apache.hadoop.hbase.testclassification.SmallTests;
+import org.apache.hadoop.hbase.testclassification.MediumTests;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
-@Category({IOTests.class, SmallTests.class})
+@Category({IOTests.class, MediumTests.class})
 public class TestPrefetch {
 
   @ClassRule
@@ -57,24 +60,25 @@ public class TestPrefetch {
   private Configuration conf;
   private CacheConfig cacheConf;
   private FileSystem fs;
+  private BlockCache blockCache;
 
   @Before
   public void setUp() throws IOException {
     conf = TEST_UTIL.getConfiguration();
     conf.setBoolean(CacheConfig.PREFETCH_BLOCKS_ON_OPEN_KEY, true);
     fs = HFileSystem.get(conf);
-    CacheConfig.blockCacheDisabled = false;
-    CacheConfig.instantiateBlockCache(conf);
-    cacheConf = new CacheConfig(conf);
+    blockCache = BlockCacheFactory.createBlockCache(conf);
+    cacheConf = new CacheConfig(conf, blockCache);
   }
 
   @Test
   public void testPrefetchSetInHCDWorks() {
-    HColumnDescriptor hcd = new HColumnDescriptor(Bytes.toBytes("f"));
-    hcd.setPrefetchBlocksOnOpen(true);
+    ColumnFamilyDescriptor columnFamilyDescriptor = ColumnFamilyDescriptorBuilder
+        .newBuilder(Bytes.toBytes("f")).setPrefetchBlocksOnOpen(true).build();
     Configuration c = HBaseConfiguration.create();
     assertFalse(c.getBoolean(CacheConfig.PREFETCH_BLOCKS_ON_OPEN_KEY, false));
-    CacheConfig cc = new CacheConfig(c, hcd);
+    CacheConfig cc =
+        new CacheConfig(c, columnFamilyDescriptor, blockCache, ByteBuffAllocator.HEAP);
     assertTrue(cc.shouldPrefetchOnOpen());
   }
 
@@ -119,15 +123,14 @@ public class TestPrefetch {
     }
 
     // Check that all of the data blocks were preloaded
-    BlockCache blockCache = cacheConf.getBlockCache();
+    BlockCache blockCache = cacheConf.getBlockCache().get();
     long offset = 0;
     while (offset < reader.getTrailer().getLoadOnOpenDataOffset()) {
       HFileBlock block = reader.readBlock(offset, -1, false, true, false, true, null, null);
       BlockCacheKey blockCacheKey = new BlockCacheKey(reader.getName(), offset);
       boolean isCached = blockCache.getBlock(blockCacheKey, true, false, true) != null;
-      if (block.getBlockType() == BlockType.DATA ||
-          block.getBlockType() == BlockType.ROOT_INDEX ||
-          block.getBlockType() == BlockType.INTERMEDIATE_INDEX) {
+      if (block.getBlockType() == BlockType.DATA || block.getBlockType() == BlockType.ROOT_INDEX
+          || block.getBlockType() == BlockType.INTERMEDIATE_INDEX) {
         assertTrue(isCached);
       }
       offset += block.getOnDiskSizeWithHeader();
@@ -141,7 +144,6 @@ public class TestPrefetch {
       .build();
     StoreFileWriter sfw = new StoreFileWriter.Builder(conf, cacheConf, fs)
       .withOutputDir(storeFileParentDir)
-      .withComparator(CellComparatorImpl.COMPARATOR)
       .withFileContext(meta)
       .build();
 

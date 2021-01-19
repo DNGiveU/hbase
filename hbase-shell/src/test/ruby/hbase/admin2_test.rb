@@ -17,18 +17,17 @@
 # limitations under the License.
 #
 
-require 'shell'
+require 'hbase_shell'
 require 'stringio'
 require 'hbase_constants'
 require 'hbase/hbase'
 require 'hbase/table'
 
-include HBaseConstants
-
 module Hbase
   # Tests for the `status` shell command
   class StatusTest < Test::Unit::TestCase
     include TestHelpers
+    include HBaseConstants
 
     def setup
       setup_hbase
@@ -72,6 +71,10 @@ module Hbase
       puts "Status output:\n#{output}"
       # Some text which isn't in the simple output
       assert output.include? 'regionsInTransition'
+    end
+
+    define_test 'hbck_chore_run' do
+      command(:hbck_chore_run)
     end
   end
 
@@ -122,7 +125,7 @@ module Hbase
 
     define_test "Snapshot should work when SKIP_FLUSH args" do
       drop_test_snapshot()
-      command(:snapshot, @test_name, @create_test_snapshot, {SKIP_FLUSH => true})
+      command(:snapshot, @test_name, @create_test_snapshot, {::HBaseConstants::SKIP_FLUSH => true})
       list = command(:list_snapshots, @create_test_snapshot)
       assert_equal(1, list.size)
     end
@@ -152,7 +155,7 @@ module Hbase
       assert_match(/f1/, admin.describe(restore_table))
       assert_match(/f2/, admin.describe(restore_table))
       command(:snapshot, restore_table, @create_test_snapshot)
-      command(:alter, restore_table, METHOD => 'delete', NAME => 'f1')
+      command(:alter, restore_table, ::HBaseConstants::METHOD => 'delete', ::HBaseConstants::NAME => 'f1')
       assert_no_match(/f1/, admin.describe(restore_table))
       assert_match(/f2/, admin.describe(restore_table))
       drop_test_table(restore_table)
@@ -289,6 +292,189 @@ module Hbase
       list = command(:list_table_snapshots, ".*", ".*")
       assert_equal(0, list.size)
       drop_test_table(new_table)
+    end
+  end
+
+class CommissioningTest < Test::Unit::TestCase
+    include TestHelpers
+
+    def setup
+      setup_hbase
+      # Create test table if it does not exist
+      @test_name = 'hbase_shell_commissioning_test'
+      drop_test_table(@test_name)
+      create_test_table(@test_name)
+    end
+
+    def teardown
+      shutdown
+    end
+
+    define_test 'list decommissioned regionservers' do
+      server_name = admin.getServerNames([], true)[0].getServerName()
+      command(:decommission_regionservers, server_name)
+      begin
+        output = capture_stdout { command(:list_decommissioned_regionservers) }
+        puts "#{output}"
+        assert output.include? 'DECOMMISSIONED REGION SERVERS'
+        assert output.include? "#{server_name}"
+        assert output.include? '1 row(s)'
+      ensure
+        command(:recommission_regionserver, server_name)
+        output = capture_stdout { command(:list_decommissioned_regionservers) }
+        puts "#{output}"
+        assert output.include? 'DECOMMISSIONED REGION SERVERS'
+        assert (output.include? "#{server_name}") ? false : true
+        assert output.include? '0 row(s)'
+      end
+    end
+
+    define_test 'decommission regionservers without offload' do
+      server_name = admin.getServerNames([], true)[0].getServerName()
+      command(:decommission_regionservers, server_name, false)
+      begin
+        output = capture_stdout { command(:list_decommissioned_regionservers) }
+        assert (output.include? "#{server_name}")
+      ensure
+        command(:recommission_regionserver, server_name)
+        output = capture_stdout { command(:list_decommissioned_regionservers) }
+        assert (output.include? "#{server_name}") ? false : true
+      end
+    end
+
+    define_test 'decommission regionservers with server names as list' do
+      server_name = admin.getServerNames([], true)[0].getServerName()
+      command(:decommission_regionservers, [server_name])
+      begin
+        output = capture_stdout { command(:list_decommissioned_regionservers) }
+        assert (output.include? "#{server_name}")
+      ensure
+        command(:recommission_regionserver, server_name)
+        output = capture_stdout { command(:list_decommissioned_regionservers) }
+        assert (output.include? "#{server_name}") ? false : true
+      end
+    end
+
+    define_test 'decommission regionservers with server host name only' do
+      server_name = admin.getServerNames([], true)[0]
+      host_name = server_name.getHostname
+      server_name_str = server_name.getServerName
+      command(:decommission_regionservers, host_name)
+      begin
+        output = capture_stdout { command(:list_decommissioned_regionservers) }
+        assert output.include? "#{server_name_str}"
+      ensure
+        command(:recommission_regionserver, host_name)
+        output = capture_stdout { command(:list_decommissioned_regionservers) }
+        assert (output.include? "#{server_name_str}") ? false : true
+      end
+    end
+
+    define_test 'decommission regionservers with server host name and port' do
+      server_name = admin.getServerNames([], true)[0]
+      host_name_and_port = server_name.getHostname + ',' +server_name.getPort.to_s
+      server_name_str = server_name.getServerName
+      command(:decommission_regionservers, host_name_and_port)
+      begin
+        output = capture_stdout { command(:list_decommissioned_regionservers) }
+        assert output.include? "#{server_name_str}"
+      ensure
+        command(:recommission_regionserver, host_name_and_port)
+        output = capture_stdout { command(:list_decommissioned_regionservers) }
+        assert (output.include? "#{server_name_str}") ? false : true
+      end
+    end
+
+    define_test 'decommission regionservers with non-existant server name' do
+      server_name = admin.getServerNames([], true)[0].getServerName()
+      assert_raise(ArgumentError) do
+        command(:decommission_regionservers, 'dummy')
+      end
+    end
+
+    define_test 'recommission regionserver with non-existant server name' do
+      server_name = admin.getServerNames([], true)[0].getServerName()
+      assert_raise(ArgumentError) do
+        command(:recommission_regionserver, 'dummy')
+      end
+    end
+
+    define_test 'decommission regionservers with invalid argument' do
+      assert_raise(ArgumentError) do
+        command(:decommission_regionservers, 1)
+      end
+
+      assert_raise(ArgumentError) do
+        command(:decommission_regionservers, {1=>1})
+      end
+
+      assert_raise(ArgumentError) do
+       command(:decommission_regionservers, 'dummy', 1)
+      end
+
+      assert_raise(ArgumentError) do
+        command(:decommission_regionservers, 'dummy', {1=>1})
+      end
+    end
+
+    define_test 'recommission regionserver with invalid argument' do
+      assert_raise(ArgumentError) do
+        command(:recommission_regionserver, 1)
+      end
+
+      assert_raise(ArgumentError) do
+        command(:recommission_regionserver, {1=>1})
+      end
+
+      assert_raise(ArgumentError) do
+        command(:recommission_regionserver, 'dummy', 1)
+      end
+
+      assert_raise(ArgumentError) do
+        command(:recommission_regionserver, 'dummy', {1=>1})
+      end
+    end
+  end
+
+  # Tests for the `regioninfo` shell command
+  class RegionInfoTest < Test::Unit::TestCase
+    include TestHelpers
+    include HBaseConstants
+
+    def setup
+      setup_hbase
+      # Create test table if it does not exist
+      @test_name = "hbase_shell_regioninfo_test"
+      drop_test_table(@test_name)
+      create_test_table(@test_name)
+    end
+
+    def teardown
+      shutdown
+    end
+
+    define_test "Get region info without any args" do
+      assert_raise(ArgumentError) do
+        command(:regioninfo)
+      end
+    end
+
+    define_test 'Get region info with encoded region name' do
+      region = command(:locate_region, @test_name, '')
+      encodedRegionName = region.getRegion.getEncodedName
+      output = capture_stdout { command(:regioninfo, encodedRegionName) }
+      puts "Region info output:\n#{output}"
+      assert output.include? 'ENCODED'
+      assert output.include? 'STARTKEY'
+    end
+
+    define_test 'Get region info with region name' do
+      region = command(:locate_region, @test_name, '')
+      regionName = region.getRegion.getRegionNameAsString
+      output = capture_stdout { command(:regioninfo, regionName) }
+      puts "Region info output:\n#{output}"
+      assert output.include? 'ENCODED'
+      assert output.include? 'STARTKEY'
     end
   end
   # rubocop:enable ClassLength

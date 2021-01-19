@@ -26,11 +26,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.backup.BackupHFileCleaner;
 import org.apache.hadoop.hbase.backup.BackupInfo;
@@ -45,11 +43,11 @@ import org.apache.hadoop.hbase.backup.master.LogRollMasterProcedureManager;
 import org.apache.hadoop.hbase.backup.regionserver.LogRollRegionServerProcedureManager;
 import org.apache.hadoop.hbase.client.Admin;
 import org.apache.hadoop.hbase.client.Connection;
+import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.coprocessor.CoprocessorHost;
 import org.apache.hadoop.hbase.master.cleaner.HFileCleaner;
 import org.apache.hadoop.hbase.procedure.ProcedureManagerHost;
 import org.apache.hadoop.hbase.util.Pair;
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -101,7 +99,6 @@ public class BackupManager implements Closeable {
    * (TESTs only)
    * @param conf configuration
    */
-  @VisibleForTesting
   public static void decorateMasterConfiguration(Configuration conf) {
     if (!isBackupEnabled(conf)) {
       return;
@@ -137,7 +134,6 @@ public class BackupManager implements Closeable {
    * TESTs only.
    * @param conf configuration
    */
-  @VisibleForTesting
   public static void decorateRegionServerConfiguration(Configuration conf) {
     if (!isBackupEnabled(conf)) {
       return;
@@ -208,9 +204,9 @@ public class BackupManager implements Closeable {
     if (type == BackupType.FULL && (tableList == null || tableList.isEmpty())) {
       // If table list is null for full backup, which means backup all tables. Then fill the table
       // list with all user tables from meta. It no table available, throw the request exception.
-      HTableDescriptor[] htds = null;
+      List<TableDescriptor> htds = null;
       try (Admin admin = conn.getAdmin()) {
-        htds = admin.listTables();
+        htds = admin.listTableDescriptors();
       } catch (Exception e) {
         throw new BackupException(e);
       }
@@ -219,7 +215,7 @@ public class BackupManager implements Closeable {
         throw new BackupException("No table exists for full backup of all tables.");
       } else {
         tableList = new ArrayList<>();
-        for (HTableDescriptor hTableDescriptor : htds) {
+        for (TableDescriptor hTableDescriptor : htds) {
           TableName tn = hTableDescriptor.getTableName();
           if (tn.equals(BackupSystemTable.getTableName(conf))) {
             // skip backup system table

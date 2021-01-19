@@ -66,14 +66,15 @@ import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.procedure2.store.wal.WALProcedureStore;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.BackupProtos;
-import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.hbase.shaded.protobuf.generated.BackupProtos;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 
 /**
  * This class provides API to access backup system table<br>
@@ -141,12 +142,12 @@ public final class BackupSystemTable implements Closeable {
   /**
    * Stores backup sessions (contexts)
    */
-  final static byte[] SESSIONS_FAMILY = "session".getBytes();
+  final static byte[] SESSIONS_FAMILY = Bytes.toBytes("session");
   /**
    * Stores other meta
    */
-  final static byte[] META_FAMILY = "meta".getBytes();
-  final static byte[] BULK_LOAD_FAMILY = "bulk".getBytes();
+  final static byte[] META_FAMILY = Bytes.toBytes("meta");
+  final static byte[] BULK_LOAD_FAMILY = Bytes.toBytes("bulk");
   /**
    * Connection to HBase cluster, shared among all instances
    */
@@ -154,20 +155,20 @@ public final class BackupSystemTable implements Closeable {
 
   private final static String BACKUP_INFO_PREFIX = "session:";
   private final static String START_CODE_ROW = "startcode:";
-  private final static byte[] ACTIVE_SESSION_ROW = "activesession:".getBytes();
-  private final static byte[] ACTIVE_SESSION_COL = "c".getBytes();
+  private final static byte[] ACTIVE_SESSION_ROW = Bytes.toBytes("activesession:");
+  private final static byte[] ACTIVE_SESSION_COL = Bytes.toBytes("c");
 
-  private final static byte[] ACTIVE_SESSION_YES = "yes".getBytes();
-  private final static byte[] ACTIVE_SESSION_NO = "no".getBytes();
+  private final static byte[] ACTIVE_SESSION_YES = Bytes.toBytes("yes");
+  private final static byte[] ACTIVE_SESSION_NO = Bytes.toBytes("no");
 
   private final static String INCR_BACKUP_SET = "incrbackupset:";
   private final static String TABLE_RS_LOG_MAP_PREFIX = "trslm:";
   private final static String RS_LOG_TS_PREFIX = "rslogts:";
 
   private final static String BULK_LOAD_PREFIX = "bulk:";
-  private final static byte[] BULK_LOAD_PREFIX_BYTES = BULK_LOAD_PREFIX.getBytes();
-  private final static byte[] DELETE_OP_ROW = "delete_op_row".getBytes();
-  private final static byte[] MERGE_OP_ROW = "merge_op_row".getBytes();
+  private final static byte[] BULK_LOAD_PREFIX_BYTES = Bytes.toBytes(BULK_LOAD_PREFIX);
+  private final static byte[] DELETE_OP_ROW = Bytes.toBytes("delete_op_row");
+  private final static byte[] MERGE_OP_ROW = Bytes.toBytes("merge_op_row");
 
   final static byte[] TBL_COL = Bytes.toBytes("tbl");
   final static byte[] FAM_COL = Bytes.toBytes("fam");
@@ -1188,7 +1189,7 @@ public final class BackupSystemTable implements Closeable {
     List<String> list = new ArrayList<>();
     try (Table table = connection.getTable(tableName)) {
       Scan scan = createScanForBackupSetList();
-      scan.setMaxVersions(1);
+      scan.readVersions(1);
       try (ResultScanner scanner = table.getScanner(scan)) {
         Result res;
         while ((res = scanner.next()) != null) {
@@ -1404,7 +1405,7 @@ public final class BackupSystemTable implements Closeable {
   private Get createGetForBackupInfo(String backupId) throws IOException {
     Get get = new Get(rowkey(BACKUP_INFO_PREFIX, backupId));
     get.addFamily(BackupSystemTable.SESSIONS_FAMILY);
-    get.setMaxVersions(1);
+    get.readVersions(1);
     return get;
   }
 
@@ -1439,7 +1440,7 @@ public final class BackupSystemTable implements Closeable {
   private Get createGetForStartCode(String rootPath) throws IOException {
     Get get = new Get(rowkey(START_CODE_ROW, rootPath));
     get.addFamily(BackupSystemTable.META_FAMILY);
-    get.setMaxVersions(1);
+    get.readVersions(1);
     return get;
   }
 
@@ -1462,7 +1463,7 @@ public final class BackupSystemTable implements Closeable {
   private Get createGetForIncrBackupTableSet(String backupRoot) throws IOException {
     Get get = new Get(rowkey(INCR_BACKUP_SET, backupRoot));
     get.addFamily(BackupSystemTable.META_FAMILY);
-    get.setMaxVersions(1);
+    get.readVersions(1);
     return get;
   }
 
@@ -1500,10 +1501,10 @@ public final class BackupSystemTable implements Closeable {
     byte[] startRow = Bytes.toBytes(BACKUP_INFO_PREFIX);
     byte[] stopRow = Arrays.copyOf(startRow, startRow.length);
     stopRow[stopRow.length - 1] = (byte) (stopRow[stopRow.length - 1] + 1);
-    scan.setStartRow(startRow);
-    scan.setStopRow(stopRow);
+    scan.withStartRow(startRow);
+    scan.withStopRow(stopRow);
     scan.addFamily(BackupSystemTable.SESSIONS_FAMILY);
-    scan.setMaxVersions(1);
+    scan.readVersions(1);
     return scan;
   }
 
@@ -1540,8 +1541,8 @@ public final class BackupSystemTable implements Closeable {
     byte[] startRow = rowkey(TABLE_RS_LOG_MAP_PREFIX, backupRoot);
     byte[] stopRow = Arrays.copyOf(startRow, startRow.length);
     stopRow[stopRow.length - 1] = (byte) (stopRow[stopRow.length - 1] + 1);
-    scan.setStartRow(startRow);
-    scan.setStopRow(stopRow);
+    scan.withStartRow(startRow);
+    scan.withStopRow(stopRow);
     scan.addFamily(BackupSystemTable.META_FAMILY);
 
     return scan;
@@ -1581,10 +1582,10 @@ public final class BackupSystemTable implements Closeable {
     byte[] startRow = rowkey(RS_LOG_TS_PREFIX, backupRoot);
     byte[] stopRow = Arrays.copyOf(startRow, startRow.length);
     stopRow[stopRow.length - 1] = (byte) (stopRow[stopRow.length - 1] + 1);
-    scan.setStartRow(startRow);
-    scan.setStopRow(stopRow);
+    scan.withStartRow(startRow);
+    scan.withStopRow(stopRow);
     scan.addFamily(BackupSystemTable.META_FAMILY);
-    scan.setMaxVersions(1);
+    scan.readVersions(1);
 
     return scan;
   }
@@ -1615,7 +1616,7 @@ public final class BackupSystemTable implements Closeable {
           Bytes.toString(region), BLK_LD_DELIM, filename));
         put.addColumn(BackupSystemTable.META_FAMILY, TBL_COL, table.getName());
         put.addColumn(BackupSystemTable.META_FAMILY, FAM_COL, entry.getKey());
-        put.addColumn(BackupSystemTable.META_FAMILY, PATH_COL, file.getBytes());
+        put.addColumn(BackupSystemTable.META_FAMILY, PATH_COL, Bytes.toBytes(file));
         put.addColumn(BackupSystemTable.META_FAMILY, STATE_COL, BL_COMMIT);
         puts.add(put);
         LOG.debug(
@@ -1695,7 +1696,7 @@ public final class BackupSystemTable implements Closeable {
         Bytes.toString(region), BLK_LD_DELIM, filename));
       put.addColumn(BackupSystemTable.META_FAMILY, TBL_COL, table.getName());
       put.addColumn(BackupSystemTable.META_FAMILY, FAM_COL, family);
-      put.addColumn(BackupSystemTable.META_FAMILY, PATH_COL, file.getBytes());
+      put.addColumn(BackupSystemTable.META_FAMILY, PATH_COL, Bytes.toBytes(file));
       put.addColumn(BackupSystemTable.META_FAMILY, STATE_COL, BL_PREPARE);
       puts.add(put);
       LOG.debug("writing raw bulk path " + file + " for " + table + " " + Bytes.toString(region));
@@ -1858,7 +1859,7 @@ public final class BackupSystemTable implements Closeable {
     scan.withStartRow(startRow);
     scan.withStopRow(stopRow);
     scan.addFamily(BackupSystemTable.META_FAMILY);
-    scan.setMaxVersions(1);
+    scan.readVersions(1);
     return scan;
   }
 
@@ -1890,10 +1891,10 @@ public final class BackupSystemTable implements Closeable {
         : rowkey(BULK_LOAD_PREFIX, backupId + BLK_LD_DELIM);
     byte[] stopRow = Arrays.copyOf(startRow, startRow.length);
     stopRow[stopRow.length - 1] = (byte) (stopRow[stopRow.length - 1] + 1);
-    scan.setStartRow(startRow);
-    scan.setStopRow(stopRow);
+    scan.withStartRow(startRow);
+    scan.withStopRow(stopRow);
     scan.addFamily(BackupSystemTable.META_FAMILY);
-    scan.setMaxVersions(1);
+    scan.readVersions(1);
     return scan;
   }
 
@@ -1902,7 +1903,7 @@ public final class BackupSystemTable implements Closeable {
     Put put = new Put(rowkey(BULK_LOAD_PREFIX, backupId + BLK_LD_DELIM + ts + BLK_LD_DELIM + idx));
     put.addColumn(BackupSystemTable.META_FAMILY, TBL_COL, tn.getName());
     put.addColumn(BackupSystemTable.META_FAMILY, FAM_COL, fam);
-    put.addColumn(BackupSystemTable.META_FAMILY, PATH_COL, p.getBytes());
+    put.addColumn(BackupSystemTable.META_FAMILY, PATH_COL, Bytes.toBytes(p));
     return put;
   }
 
@@ -1938,8 +1939,8 @@ public final class BackupSystemTable implements Closeable {
     byte[] startRow = Bytes.toBytes(WALS_PREFIX);
     byte[] stopRow = Arrays.copyOf(startRow, startRow.length);
     stopRow[stopRow.length - 1] = (byte) (stopRow[stopRow.length - 1] + 1);
-    scan.setStartRow(startRow);
-    scan.setStopRow(stopRow);
+    scan.withStartRow(startRow);
+    scan.withStopRow(stopRow);
     scan.addFamily(BackupSystemTable.META_FAMILY);
     return scan;
   }
@@ -1965,8 +1966,8 @@ public final class BackupSystemTable implements Closeable {
     byte[] startRow = Bytes.toBytes(SET_KEY_PREFIX);
     byte[] stopRow = Arrays.copyOf(startRow, startRow.length);
     stopRow[stopRow.length - 1] = (byte) (stopRow[stopRow.length - 1] + 1);
-    scan.setStartRow(startRow);
-    scan.setStopRow(stopRow);
+    scan.withStartRow(startRow);
+    scan.withStopRow(stopRow);
     scan.addFamily(BackupSystemTable.META_FAMILY);
     return scan;
   }
@@ -2006,7 +2007,7 @@ public final class BackupSystemTable implements Closeable {
   }
 
   private byte[] convertToByteArray(String[] tables) {
-    return StringUtils.join(tables, ",").getBytes();
+    return Bytes.toBytes(StringUtils.join(tables, ","));
   }
 
   /**
@@ -2037,6 +2038,6 @@ public final class BackupSystemTable implements Closeable {
     for (String ss : other) {
       sb.append(ss);
     }
-    return sb.toString().getBytes();
+    return Bytes.toBytes(sb.toString());
   }
 }

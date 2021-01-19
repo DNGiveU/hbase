@@ -24,10 +24,10 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseClassTestRule;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.QosTestHelper;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.regionserver.AnnotationReadingPriorityFunction;
 import org.apache.hadoop.hbase.regionserver.RSRpcServices;
 import org.apache.hadoop.hbase.testclassification.MasterTests;
@@ -66,10 +66,11 @@ public class TestMasterQosFunction extends QosTestHelper {
   @Test
   public void testRegionInTransition() throws IOException {
     // Check ReportRegionInTransition
-    HBaseProtos.RegionInfo meta_ri = HRegionInfo.convert(HRegionInfo.FIRST_META_REGIONINFO);
-    HBaseProtos.RegionInfo normal_ri = HRegionInfo.convert(
-        new HRegionInfo(TableName.valueOf("test:table"),
-            Bytes.toBytes("a"), Bytes.toBytes("b"), false));
+    HBaseProtos.RegionInfo meta_ri =
+      ProtobufUtil.toRegionInfo(RegionInfoBuilder.FIRST_META_REGIONINFO);
+    HBaseProtos.RegionInfo normal_ri =
+      ProtobufUtil.toRegionInfo(RegionInfoBuilder.newBuilder(TableName.valueOf("test:table"))
+        .setStartKey(Bytes.toBytes("a")).setEndKey(Bytes.toBytes("b")).build());
 
 
     RegionServerStatusProtos.RegionStateTransition metaTransition = RegionServerStatusProtos
@@ -96,9 +97,9 @@ public class TestMasterQosFunction extends QosTestHelper {
             .addTransition(normalTransition).build();
 
     final String reportFuncName = "ReportRegionStateTransition";
-    checkMethod(conf, reportFuncName, HConstants.SYSTEMTABLE_QOS, qosFunction,
+    checkMethod(conf, reportFuncName, HConstants.META_QOS, qosFunction,
         metaTransitionRequest);
-    checkMethod(conf, reportFuncName, HConstants.NORMAL_QOS, qosFunction, normalTransitionRequest);
+    checkMethod(conf, reportFuncName, HConstants.HIGH_QOS, qosFunction, normalTransitionRequest);
   }
 
   @Test

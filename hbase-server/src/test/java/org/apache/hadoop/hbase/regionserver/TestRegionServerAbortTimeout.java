@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -89,8 +89,6 @@ public class TestRegionServerAbortTimeout {
 
   @AfterClass
   public static void tearDown() throws Exception {
-    UTIL.getAdmin().disableTable(TABLE_NAME);
-    UTIL.getAdmin().deleteTable(TABLE_NAME);
     UTIL.shutdownMiniCluster();
   }
 

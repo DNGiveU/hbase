@@ -33,12 +33,6 @@ import org.apache.hadoop.hbase.ipc.SimpleRpcScheduler;
 @InterfaceStability.Evolving
 public class SimpleRpcSchedulerFactory implements RpcSchedulerFactory {
   @Override
-  @Deprecated
-  public RpcScheduler create(Configuration conf, PriorityFunction priority) {
-	  return create(conf, priority, null);
-  }
-
-  @Override
   public RpcScheduler create(Configuration conf, PriorityFunction priority, Abortable server) {
     int handlerCount = conf.getInt(HConstants.REGION_SERVER_HANDLER_COUNT,
         HConstants.DEFAULT_REGION_SERVER_HANDLER_COUNT);
@@ -49,6 +43,8 @@ public class SimpleRpcSchedulerFactory implements RpcSchedulerFactory {
         HConstants.DEFAULT_REGION_SERVER_HIGH_PRIORITY_HANDLER_COUNT),
       conf.getInt(HConstants.REGION_SERVER_REPLICATION_HANDLER_COUNT,
           HConstants.DEFAULT_REGION_SERVER_REPLICATION_HANDLER_COUNT),
+        conf.getInt(HConstants.MASTER_META_TRANSITION_HANDLER_COUNT,
+            HConstants.MASTER__META_TRANSITION_HANDLER_COUNT_DEFAULT),
       priority,
       server,
       HConstants.QOS_THRESHOLD);

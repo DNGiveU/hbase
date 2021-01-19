@@ -1,5 +1,4 @@
 /**
- *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -36,6 +35,7 @@ import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.regionserver.wal.AbstractFSWAL;
+import org.apache.hadoop.hbase.util.CommonFSUtils;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.FSUtils;
 import org.apache.hadoop.hbase.wal.AbstractFSWALProvider;
@@ -43,7 +43,6 @@ import org.apache.hadoop.hbase.wal.WALSplitter;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * This class abstracts a bunch of operations the HMaster needs
@@ -53,6 +52,9 @@ import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesti
 public class MasterWalManager {
   private static final Logger LOG = LoggerFactory.getLogger(MasterWalManager.class);
 
+  /**
+   * Filter *in* WAL files that are for the hbase:meta Region.
+   */
   final static PathFilter META_FILTER = new PathFilter() {
     @Override
     public boolean accept(Path p) {
@@ -60,7 +62,10 @@ public class MasterWalManager {
     }
   };
 
-  final static PathFilter NON_META_FILTER = new PathFilter() {
+  /**
+   * Filter *out* WAL files that are for the hbase:meta Region; i.e. return user-space WALs only.
+   */
+  public final static PathFilter NON_META_FILTER = new PathFilter() {
     @Override
     public boolean accept(Path p) {
       return !AbstractFSWALProvider.isMetaFile(p);
@@ -78,10 +83,19 @@ public class MasterWalManager {
 
   // The Path to the old logs dir
   private final Path oldLogDir;
+
   private final Path rootDir;
 
   // create the split log lock
   private final Lock splitLogLock = new ReentrantLock();
+
+  /**
+   * Superceded by {@link SplitWALManager}; i.e. procedure-based WAL splitting rather than
+   *   'classic' zk-coordinated WAL splitting.
+   * @deprecated  since 2.3.0 and 3.0.0 to be removed in 4.0.0; replaced by {@link SplitWALManager}.
+   * @see SplitWALManager
+   */
+  @Deprecated
   private final SplitLogManager splitLogManager;
 
   // Is the fileystem ok?
@@ -99,7 +113,6 @@ public class MasterWalManager {
     this.rootDir = rootDir;
     this.services = services;
     this.splitLogManager = new SplitLogManager(services, conf);
-
     this.oldLogDir = new Path(rootDir, HConstants.HREGION_OLDLOGDIR_NAME);
   }
 
@@ -109,7 +122,6 @@ public class MasterWalManager {
     }
   }
 
-  @VisibleForTesting
   SplitLogManager getSplitLogManager() {
     return this.splitLogManager;
   }
@@ -167,7 +179,6 @@ public class MasterWalManager {
 
   /**
    * @return listing of ServerNames found by parsing WAL directory paths in FS.
-   *
    */
   public Set<ServerName> getServerNamesFromWALDirPath(final PathFilter filter) throws IOException {
     FileStatus[] walDirForServerNames = getWALDirPaths(filter);
@@ -187,8 +198,8 @@ public class MasterWalManager {
    * @return List of all RegionServer WAL dirs; i.e. this.rootDir/HConstants.HREGION_LOGDIR_NAME.
    */
   public FileStatus[] getWALDirPaths(final PathFilter filter) throws IOException {
-    Path walDirPath = new Path(rootDir, HConstants.HREGION_LOGDIR_NAME);
-    FileStatus[] walDirForServerNames = FSUtils.listStatus(fs, walDirPath, filter);
+    Path walDirPath = new Path(CommonFSUtils.getWALRootDir(conf), HConstants.HREGION_LOGDIR_NAME);
+    FileStatus[] walDirForServerNames = CommonFSUtils.listStatus(fs, walDirPath, filter);
     return walDirForServerNames == null? new FileStatus[0]: walDirForServerNames;
   }
 
@@ -201,12 +212,12 @@ public class MasterWalManager {
    *             it.
    */
   @Deprecated
-  public Set<ServerName> getFailedServersFromLogFolders() {
-    boolean retrySplitting = !conf.getBoolean("hbase.hlog.split.skip.errors",
+  public Set<ServerName> getFailedServersFromLogFolders() throws IOException {
+    boolean retrySplitting = !conf.getBoolean(WALSplitter.SPLIT_SKIP_ERRORS_KEY,
         WALSplitter.SPLIT_SKIP_ERRORS_DEFAULT);
 
     Set<ServerName> serverNames = new HashSet<>();
-    Path logsDirPath = new Path(this.rootDir, HConstants.HREGION_LOGDIR_NAME);
+    Path logsDirPath = new Path(CommonFSUtils.getWALRootDir(conf), HConstants.HREGION_LOGDIR_NAME);
 
     do {
       if (services.isStopped()) {
@@ -215,7 +226,7 @@ public class MasterWalManager {
       }
       try {
         if (!this.fs.exists(logsDirPath)) return serverNames;
-        FileStatus[] logFolders = FSUtils.listStatus(this.fs, logsDirPath, null);
+        FileStatus[] logFolders = CommonFSUtils.listStatus(this.fs, logsDirPath, null);
         // Get online servers after getting log folders to avoid log folder deletion of newly
         // checked in region servers . see HBASE-5916
         Set<ServerName> onlineServers = services.getServerManager().getOnlineServers().keySet();
@@ -225,7 +236,7 @@ public class MasterWalManager {
           return serverNames;
         }
         for (FileStatus status : logFolders) {
-          FileStatus[] curLogFiles = FSUtils.listStatus(this.fs, status.getPath(), null);
+          FileStatus[] curLogFiles = CommonFSUtils.listStatus(this.fs, status.getPath(), null);
           if (curLogFiles == null || curLogFiles.length == 0) {
             // Empty log folder. No recovery needed
             continue;
@@ -290,7 +301,7 @@ public class MasterWalManager {
   @edu.umd.cs.findbugs.annotations.SuppressWarnings(value="UL_UNRELEASED_LOCK", justification=
       "We only release this lock when we set it. Updates to code that uses it should verify use " +
       "of the guard boolean.")
-  private List<Path> getLogDirs(final Set<ServerName> serverNames) throws IOException {
+  List<Path> getLogDirs(final Set<ServerName> serverNames) throws IOException {
     List<Path> logDirs = new ArrayList<>();
     boolean needReleaseLock = false;
     if (!this.services.isInitialized()) {
@@ -359,11 +370,13 @@ public class MasterWalManager {
   }
 
   /**
-   * For meta region open and closed normally on a server, it may leave some meta
-   * WAL in the server's wal dir. Since meta region is no long on this server,
-   * The SCP won't split those meta wals, just leaving them there. So deleting
-   * the wal dir will fail since the dir is not empty. Actually We can safely achive those
-   * meta log and Archiving the meta log and delete the dir.
+   * The hbase:meta region may OPEN and CLOSE without issue on a server and then move elsewhere.
+   * On CLOSE, the WAL for the hbase:meta table may not be archived yet (The WAL is only needed if
+   * hbase:meta did not close cleanaly). Since meta region is no long on this server,
+   * the ServerCrashProcedure won't split these leftover hbase:meta WALs, just leaving them in
+   * the WAL splitting dir. If we try to delete the WAL splitting for the server,  it fail since
+   * the dir is not totally empty. We can safely archive these hbase:meta log; then the
+   * WAL dir can be deleted.
    * @param serverName the server to archive meta log
    */
   public void archiveMetaLog(final ServerName serverName) {
@@ -372,13 +385,13 @@ public class MasterWalManager {
           AbstractFSWALProvider.getWALDirectoryName(serverName.toString()));
       Path splitDir = logDir.suffix(AbstractFSWALProvider.SPLITTING_EXT);
       if (fs.exists(splitDir)) {
-        FileStatus[] logfiles = FSUtils.listStatus(fs, splitDir, META_FILTER);
+        FileStatus[] logfiles = CommonFSUtils.listStatus(fs, splitDir, META_FILTER);
         if (logfiles != null) {
           for (FileStatus status : logfiles) {
             if (!status.isDir()) {
               Path newPath = AbstractFSWAL.getWALArchivePath(this.oldLogDir,
                   status.getPath());
-              if (!FSUtils.renameAndSetModifyTime(fs, status.getPath(), newPath)) {
+              if (!CommonFSUtils.renameAndSetModifyTime(fs, status.getPath(), newPath)) {
                 LOG.warn("Unable to move  " + status.getPath() + " to " + newPath);
               } else {
                 LOG.debug("Archived meta log " + status.getPath() + " to " + newPath);
@@ -394,6 +407,4 @@ public class MasterWalManager {
       LOG.warn("Failed archiving meta log for server " + serverName, ie);
     }
   }
-
-
 }

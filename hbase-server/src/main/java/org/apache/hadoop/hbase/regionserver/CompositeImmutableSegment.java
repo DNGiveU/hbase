@@ -28,7 +28,6 @@ import org.apache.hadoop.hbase.CellComparator;
 import org.apache.hadoop.hbase.io.TimeRange;
 import org.apache.yetus.audience.InterfaceAudience;
 import org.slf4j.Logger;
-import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * The CompositeImmutableSegments is created as a collection of ImmutableSegments and supports
@@ -52,7 +51,6 @@ public class CompositeImmutableSegment extends ImmutableSegment {
     }
   }
 
-  @VisibleForTesting
   @Override
   public List<Segment> getAllSegments() {
     return new ArrayList<>(segments);
@@ -190,7 +188,7 @@ public class CompositeImmutableSegment extends ImmutableSegment {
    * Updates the heap size counter of the segment by the given delta
    */
   @Override
-  public long incMemStoreSize(long delta, long heapOverhead, long offHeapOverhead) {
+  public long incMemStoreSize(long delta, long heapOverhead, long offHeapOverhead, int cellsCount) {
     throw new IllegalStateException("Not supported by CompositeImmutableScanner");
   }
 

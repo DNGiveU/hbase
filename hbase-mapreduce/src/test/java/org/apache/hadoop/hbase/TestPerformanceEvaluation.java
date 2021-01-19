@@ -17,20 +17,22 @@
  */
 package org.apache.hadoop.hbase;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import com.codahale.metrics.Histogram;
 import com.codahale.metrics.Snapshot;
 import com.codahale.metrics.UniformReservoir;
-import com.fasterxml.jackson.core.JsonGenerationException;
-import com.fasterxml.jackson.databind.JsonMappingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedList;
 import java.util.NoSuchElementException;
 import java.util.Queue;
@@ -40,17 +42,20 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.PerformanceEvaluation.RandomReadTest;
 import org.apache.hadoop.hbase.PerformanceEvaluation.TestOptions;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
+import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.regionserver.CompactingMemStore;
 import org.apache.hadoop.hbase.testclassification.MiscTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
+import org.apache.hadoop.hbase.util.GsonUtil;
 import org.junit.ClassRule;
-import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
+import org.apache.hbase.thirdparty.com.google.gson.Gson;
+
 @Category({MiscTests.class, SmallTests.class})
 public class TestPerformanceEvaluation {
-
   @ClassRule
   public static final HBaseClassTestRule CLASS_RULE =
       HBaseClassTestRule.forClass(TestPerformanceEvaluation.class);
@@ -61,33 +66,31 @@ public class TestPerformanceEvaluation {
   public void testDefaultInMemoryCompaction() {
     PerformanceEvaluation.TestOptions defaultOpts =
         new PerformanceEvaluation.TestOptions();
-    assertEquals(CompactingMemStore.COMPACTING_MEMSTORE_TYPE_DEFAULT.toString(),
+    assertEquals(CompactingMemStore.COMPACTING_MEMSTORE_TYPE_DEFAULT,
         defaultOpts.getInMemoryCompaction().toString());
-    HTableDescriptor htd = PerformanceEvaluation.getTableDescriptor(defaultOpts);
-    for (HColumnDescriptor hcd: htd.getFamilies()) {
-      assertEquals(CompactingMemStore.COMPACTING_MEMSTORE_TYPE_DEFAULT.toString(),
-          hcd.getInMemoryCompaction().toString());
+    TableDescriptor tableDescriptor = PerformanceEvaluation.getTableDescriptor(defaultOpts);
+    for (ColumnFamilyDescriptor familyDescriptor : tableDescriptor.getColumnFamilies()) {
+      assertEquals(CompactingMemStore.COMPACTING_MEMSTORE_TYPE_DEFAULT,
+        familyDescriptor.getInMemoryCompaction().toString());
     }
   }
 
   @Test
-  public void testSerialization()
-  throws JsonGenerationException, JsonMappingException, IOException {
+  public void testSerialization() {
     PerformanceEvaluation.TestOptions options = new PerformanceEvaluation.TestOptions();
-    assertTrue(!options.isAutoFlush());
+    assertFalse(options.isAutoFlush());
     options.setAutoFlush(true);
-    ObjectMapper mapper = new ObjectMapper();
-    String optionsString = mapper.writeValueAsString(options);
+    Gson gson = GsonUtil.createGson().create();
+    String optionsString = gson.toJson(options);
     PerformanceEvaluation.TestOptions optionsDeserialized =
-        mapper.readValue(optionsString, PerformanceEvaluation.TestOptions.class);
+      gson.fromJson(optionsString, PerformanceEvaluation.TestOptions.class);
     assertTrue(optionsDeserialized.isAutoFlush());
   }
 
   /**
-   * Exercise the mr spec writing.  Simple assertions to make sure it is basically working.
-   * @throws IOException
+   * Exercise the mr spec writing. Simple assertions to make sure it is basically working.
    */
-  @Ignore @Test
+  @Test
   public void testWriteInputFile() throws IOException {
     TestOptions opts = new PerformanceEvaluation.TestOptions();
     final int clients = 10;
@@ -99,19 +102,16 @@ public class TestPerformanceEvaluation {
     Path p = new Path(dir, PerformanceEvaluation.JOB_INPUT_FILENAME);
     long len = fs.getFileStatus(p).getLen();
     assertTrue(len > 0);
-    byte [] content = new byte[(int)len];
-    FSDataInputStream dis = fs.open(p);
-    try {
+    byte[] content = new byte[(int) len];
+    try (FSDataInputStream dis = fs.open(p)) {
       dis.readFully(content);
-      BufferedReader br =
-        new BufferedReader(new InputStreamReader(new ByteArrayInputStream(content)));
+      BufferedReader br = new BufferedReader(
+        new InputStreamReader(new ByteArrayInputStream(content), StandardCharsets.UTF_8));
       int count = 0;
       while (br.readLine() != null) {
         count++;
       }
       assertEquals(clients, count);
-    } finally {
-      dis.close();
     }
   }
 
@@ -169,9 +169,8 @@ public class TestPerformanceEvaluation {
   }
 
   @Test
-  public void testZipfian()
-  throws NoSuchMethodException, SecurityException, InstantiationException, IllegalAccessException,
-      IllegalArgumentException, InvocationTargetException {
+  public void testZipfian() throws NoSuchMethodException, SecurityException, InstantiationException,
+      IllegalAccessException, IllegalArgumentException, InvocationTargetException {
     TestOptions opts = new PerformanceEvaluation.TestOptions();
     opts.setValueZipf(true);
     final int valueSize = 1024;
@@ -196,10 +195,10 @@ public class TestPerformanceEvaluation {
   public void testSetBufferSizeOption() {
     TestOptions opts = new PerformanceEvaluation.TestOptions();
     long bufferSize = opts.getBufferSize();
-    assertEquals(bufferSize, 2l * 1024l * 1024l);
-    opts.setBufferSize(64l * 1024l);
+    assertEquals(bufferSize, 2L * 1024L * 1024L);
+    opts.setBufferSize(64L * 1024L);
     bufferSize = opts.getBufferSize();
-    assertEquals(bufferSize, 64l * 1024l);
+    assertEquals(bufferSize, 64L * 1024L);
   }
 
   @Test
@@ -258,13 +257,49 @@ public class TestPerformanceEvaluation {
     } catch (IllegalArgumentException  e) {
       System.out.println(e.getMessage());
     }
-    ((LinkedList<String>) opts).offerFirst("--multiPut=10");
-    ((LinkedList<String>) opts).offerFirst("--autoFlush=true");
+
+    //Re-create options
+    opts = new LinkedList<>();
+    opts.offer("--autoFlush=true");
+    opts.offer("--multiPut=10");
+    opts.offer(cmdName);
+    opts.offer("64");
+
     options = PerformanceEvaluation.parseOpts(opts);
     assertNotNull(options);
     assertNotNull(options.getCmdName());
     assertEquals(cmdName, options.getCmdName());
-    assertTrue(options.getMultiPut() == 10);
+    assertEquals(10, options.getMultiPut());
+  }
+
+  @Test
+  public void testParseOptsMultiPutsAndAutoFlushOrder() {
+    Queue<String> opts = new LinkedList<>();
+    String cmdName = "sequentialWrite";
+    String cmdMultiPut = "--multiPut=10";
+    String cmdAutoFlush = "--autoFlush=true";
+    opts.offer(cmdAutoFlush);
+    opts.offer(cmdMultiPut);
+    opts.offer(cmdName);
+    opts.offer("64");
+    PerformanceEvaluation.TestOptions options = null;
+    options = PerformanceEvaluation.parseOpts(opts);
+    assertNotNull(options);
+    assertEquals(true, options.autoFlush);
+    assertEquals(10, options.getMultiPut());
+
+    // Change the order of AutoFlush and Multiput
+    opts = new LinkedList<>();
+    opts.offer(cmdMultiPut);
+    opts.offer(cmdAutoFlush);
+    opts.offer(cmdName);
+    opts.offer("64");
+
+    options = null;
+    options = PerformanceEvaluation.parseOpts(opts);
+    assertNotNull(options);
+    assertEquals(10, options.getMultiPut());
+    assertEquals(true, options.autoFlush);
   }
 
   @Test
@@ -282,11 +317,46 @@ public class TestPerformanceEvaluation {
     } catch (IllegalArgumentException  e) {
       System.out.println(e.getMessage());
     }
-    ((LinkedList<String>) opts).offerFirst("--connCount=10");
+
+    opts = new LinkedList<>();
+    opts.offer("--connCount=10");
+    opts.offer(cmdName);
+    opts.offer("64");
+
     options = PerformanceEvaluation.parseOpts(opts);
     assertNotNull(options);
     assertNotNull(options.getCmdName());
     assertEquals(cmdName, options.getCmdName());
-    assertTrue(options.getConnCount() == 10);
+    assertEquals(10, options.getConnCount());
   }
+
+  @Test
+  public void testParseOptsValueRandom() {
+    Queue<String> opts = new LinkedList<>();
+    String cmdName = "sequentialWrite";
+    opts.offer("--valueRandom");
+    opts.offer("--valueZipf");
+    opts.offer(cmdName);
+    opts.offer("64");
+    PerformanceEvaluation.TestOptions options = null;
+    try {
+      options = PerformanceEvaluation.parseOpts(opts);
+      fail("should fail");
+    } catch (IllegalStateException  e) {
+      System.out.println(e.getMessage());
+    }
+
+    opts = new LinkedList<>();
+    opts.offer("--valueRandom");
+    opts.offer(cmdName);
+    opts.offer("64");
+
+    options = PerformanceEvaluation.parseOpts(opts);
+
+    assertNotNull(options);
+    assertNotNull(options.getCmdName());
+    assertEquals(cmdName, options.getCmdName());
+    assertEquals(true, options.valueRandom);
+  }
+
 }

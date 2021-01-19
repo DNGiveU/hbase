@@ -34,10 +34,9 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.PrivateCellUtil;
-import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.io.compress.Compression;
 import org.apache.hadoop.hbase.io.hfile.HFile;
-import org.apache.hadoop.hbase.io.hfile.HFile.FileInfo;
+import org.apache.hadoop.hbase.io.hfile.HFileInfo;
 import org.apache.hadoop.hbase.regionserver.CellSink;
 import org.apache.hadoop.hbase.regionserver.HStore;
 import org.apache.hadoop.hbase.regionserver.HStoreFile;
@@ -131,6 +130,8 @@ public abstract class Compactor<T extends CellSink> {
     public int maxTagsLength = 0;
     /** Min SeqId to keep during a major compaction **/
     public long minSeqIdToKeep = 0;
+    /** Total size of the compacted files **/
+    private long totalCompactedFilesSize = 0;
   }
 
   /**
@@ -167,6 +168,10 @@ public abstract class Compactor<T extends CellSink> {
       fd.maxKeyCount += keyCount;
       // calculate the latest MVCC readpoint in any of the involved store files
       Map<byte[], byte[]> fileInfo = r.loadFileInfo();
+
+      // calculate the total size of the compacted files
+      fd.totalCompactedFilesSize += r.length();
+
       byte[] tmp = null;
       // Get and set the real MVCCReadpoint for bulk loaded files, which is the
       // SeqId number.
@@ -179,7 +184,7 @@ public abstract class Compactor<T extends CellSink> {
           fd.maxMVCCReadpoint = Math.max(fd.maxMVCCReadpoint, Bytes.toLong(tmp));
         }
       }
-      tmp = fileInfo.get(FileInfo.MAX_TAGS_LEN);
+      tmp = fileInfo.get(HFileInfo.MAX_TAGS_LEN);
       if (tmp != null) {
         fd.maxTagsLength = Math.max(fd.maxTagsLength, Bytes.toInt(tmp));
       }
@@ -261,8 +266,17 @@ public abstract class Compactor<T extends CellSink> {
       throws IOException {
     // When all MVCC readpoints are 0, don't write them.
     // See HBASE-8166, HBASE-12600, and HBASE-13389.
-    return store.createWriterInTmp(fd.maxKeyCount, this.compactionCompression, true,
-    fd.maxMVCCReadpoint > 0, fd.maxTagsLength > 0, shouldDropBehind);
+    return store
+      .createWriterInTmp(fd.maxKeyCount, this.compactionCompression, true, fd.maxMVCCReadpoint > 0,
+        fd.maxTagsLength > 0, shouldDropBehind, fd.totalCompactedFilesSize,
+        HConstants.EMPTY_STRING);
+  }
+
+  protected final StoreFileWriter createTmpWriter(FileDetails fd, boolean shouldDropBehind,
+      String fileStoragePolicy) throws IOException {
+    return store
+      .createWriterInTmp(fd.maxKeyCount, this.compactionCompression, true, fd.maxMVCCReadpoint > 0,
+        fd.maxTagsLength > 0, shouldDropBehind, fd.totalCompactedFilesSize, fileStoragePolicy);
   }
 
   private ScanInfo preCompactScannerOpen(CompactionRequestImpl request, ScanType scanType,
@@ -362,31 +376,37 @@ public abstract class Compactor<T extends CellSink> {
       long smallestReadPoint, boolean cleanSeqId, ThroughputController throughputController,
       boolean major, int numofFilesToCompact) throws IOException {
     assert writer instanceof ShipperListener;
-    long bytesWrittenProgressForCloseCheck = 0;
     long bytesWrittenProgressForLog = 0;
     long bytesWrittenProgressForShippedCall = 0;
     // Since scanner.next() can return 'false' but still be delivering data,
     // we have to use a do/while loop.
     List<Cell> cells = new ArrayList<>();
-    long closeCheckSizeLimit = HStore.getCloseCheckInterval();
+    long currentTime = EnvironmentEdgeManager.currentTime();
     long lastMillis = 0;
     if (LOG.isDebugEnabled()) {
-      lastMillis = EnvironmentEdgeManager.currentTime();
+      lastMillis = currentTime;
     }
+    CloseChecker closeChecker = new CloseChecker(conf, currentTime);
     String compactionName = ThroughputControlUtil.getNameForThrottling(store, "compaction");
     long now = 0;
     boolean hasMore;
     ScannerContext scannerContext =
-        ScannerContext.newBuilder().setBatchLimit(compactionKVMax).build();
+          ScannerContext.newBuilder().setBatchLimit(compactionKVMax).build();
 
     throughputController.start(compactionName);
-    KeyValueScanner kvs = (scanner instanceof KeyValueScanner)? (KeyValueScanner)scanner : null;
-    long shippedCallSizeLimit = (long) numofFilesToCompact * this.store.getColumnFamilyDescriptor().getBlocksize();
+    KeyValueScanner kvs = (scanner instanceof KeyValueScanner) ? (KeyValueScanner) scanner : null;
+    long shippedCallSizeLimit =
+          (long) numofFilesToCompact * this.store.getColumnFamilyDescriptor().getBlocksize();
     try {
       do {
         hasMore = scanner.next(cells, scannerContext);
+        currentTime = EnvironmentEdgeManager.currentTime();
         if (LOG.isDebugEnabled()) {
-          now = EnvironmentEdgeManager.currentTime();
+          now = currentTime;
+        }
+        if (closeChecker.isTimeLimit(store, currentTime)) {
+          progress.cancel();
+          return false;
         }
         // output to writer:
         Cell lastCleanCell = null;
@@ -401,7 +421,7 @@ public abstract class Compactor<T extends CellSink> {
             lastCleanCellSeqId = 0;
           }
           writer.append(c);
-          int len = KeyValueUtil.length(c);
+          int len = c.getSerializedSize();
           ++progress.currentCompactedKVs;
           progress.totalCompactedSize += len;
           bytesWrittenProgressForShippedCall += len;
@@ -409,16 +429,9 @@ public abstract class Compactor<T extends CellSink> {
             bytesWrittenProgressForLog += len;
           }
           throughputController.control(compactionName, len);
-          // check periodically to see if a system stop is requested
-          if (closeCheckSizeLimit > 0) {
-            bytesWrittenProgressForCloseCheck += len;
-            if (bytesWrittenProgressForCloseCheck > closeCheckSizeLimit) {
-              bytesWrittenProgressForCloseCheck = 0;
-              if (!store.areWritesEnabled()) {
-                progress.cancel();
-                return false;
-              }
-            }
+          if (closeChecker.isSizeLimit(store, len)) {
+            progress.cancel();
+            return false;
           }
           if (kvs != null && bytesWrittenProgressForShippedCall > shippedCallSizeLimit) {
             if (lastCleanCell != null) {
@@ -429,7 +442,7 @@ public abstract class Compactor<T extends CellSink> {
             }
             // Clone the cells that are in the writer so that they are freed of references,
             // if they are holding any.
-            ((ShipperListener)writer).beforeShipped();
+            ((ShipperListener) writer).beforeShipped();
             // The SHARED block references, being read for compaction, will be kept in prevBlocks
             // list(See HFileScannerImpl#prevBlocks). In case of scan flow, after each set of cells
             // being returned to client, we will call shipped() which can clear this list. Here by
@@ -448,13 +461,10 @@ public abstract class Compactor<T extends CellSink> {
         // logging at DEBUG level
         if (LOG.isDebugEnabled()) {
           if ((now - lastMillis) >= COMPACTION_PROGRESS_LOG_INTERVAL) {
-            LOG.debug("Compaction progress: "
-                + compactionName
-                + " "
-                + progress
-                + String.format(", rate=%.2f kB/sec", (bytesWrittenProgressForLog / 1024.0)
-                    / ((now - lastMillis) / 1000.0)) + ", throughputController is "
-                + throughputController);
+            String rate = String.format("%.2f",
+              (bytesWrittenProgressForLog / 1024.0) / ((now - lastMillis) / 1000.0));
+            LOG.debug("Compaction progress: {} {}, rate={} KB/sec, throughputController is {}",
+              compactionName, progress, rate, throughputController);
             lastMillis = now;
             bytesWrittenProgressForLog = 0;
           }
@@ -463,9 +473,13 @@ public abstract class Compactor<T extends CellSink> {
       } while (hasMore);
     } catch (InterruptedException e) {
       progress.cancel();
-      throw new InterruptedIOException("Interrupted while control throughput of compacting "
-          + compactionName);
+      throw new InterruptedIOException(
+            "Interrupted while control throughput of compacting " + compactionName);
     } finally {
+      // Clone last cell in the final because writer will append last cell when committing. If
+      // don't clone here and once the scanner get closed, then the memory of last cell will be
+      // released. (HBASE-22582)
+      ((ShipperListener) writer).beforeShipped();
       throughputController.finish(compactionName);
     }
     progress.complete();
